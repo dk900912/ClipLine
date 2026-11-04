@@ -40,6 +40,14 @@ public sealed partial class AppFacade
             case ShortcutRecorded e: OnShortcutRecorded(e); break;
             case ForceClickEquivalent e: OnForceClickEquivalent(e.ItemId); break;
 
+            // ---- P4 系统替身 ----
+            case QuickLookCommand e: OnQuickLookCommand(e); break;
+            case MarkupSaved e: OnMarkupSaved(e); break;
+            case TrimRangeChanged e: OnTrimRangeChanged(e); break;
+            case TrimCommitted e: OnTrimCommitted(e); break;
+            case HeldWindowCommand e: OnHeldWindowCommand(e); break;
+            case ShellExtensionHang e: OnShellExtensionHang(e); break;
+
             default: break;
         }
     }

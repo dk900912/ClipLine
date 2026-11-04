@@ -82,6 +82,13 @@ public enum CommandKind
     SetDragPreview,
     RollbackShortcut,
     RecheckDrop,
+    RewriteInOriginalFormat,
+    SetTrimRange,
+    ExportTrimPassthrough,
+    ReplaceFileAtomically,
+    SetHeldWindowScale,
+    SetHeldWindowActualSize,
+    UpdateQuickLookIndex,
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);
