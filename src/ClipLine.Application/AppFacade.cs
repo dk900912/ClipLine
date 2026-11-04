@@ -277,7 +277,10 @@ public sealed partial class AppFacade
             case WelcomeElapsed: OnWelcomeElapsed(); break;
             case InboxOfferElapsed: OnInboxOfferElapsed(); break;
             case BatchStepElapsed e: Emit(CommandKind.StartFall, e.Path, Layout.FallMs); break;
-            case CopiedBadgeElapsed e: _copiedBadges.Remove(e.ItemId); break;
+            case CopiedBadgeElapsed e:
+                _copiedBadges.Remove(e.ItemId);
+                Emit(CommandKind.HideCopiedBadge, e.ItemId.ToString());
+                break;
             case FlightFinished: _activeFlights = Math.Max(0, _activeFlights - 1); break;
 
             default: break; // 后续阶段通过 partial 扩展点 DispatchExtension 处理

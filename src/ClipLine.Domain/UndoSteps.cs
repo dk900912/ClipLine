@@ -38,6 +38,9 @@ public sealed class UndoSteps
         _steps.Add(batch);
     }
 
+    /// <summary>查看最后一步但不弹出，供门面补记回收站路径（D-06 / N-08）。</summary>
+    public TakenDownBatch? Peek() => _steps.Count == 0 ? null : _steps[^1];
+
     public TakenDownBatch? Pop()
     {
         if (_steps.Count == 0) return null;

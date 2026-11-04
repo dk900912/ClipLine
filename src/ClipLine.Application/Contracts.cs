@@ -76,6 +76,12 @@ public enum CommandKind
     SetReduceMotion,
     SetTheme,
     SetFlightOrigin,
+    CopyFile,
+    ShowCopiedBadge,
+    HideCopiedBadge,
+    SetDragPreview,
+    RollbackShortcut,
+    RecheckDrop,
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);

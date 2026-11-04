@@ -233,6 +233,16 @@ public sealed class Line
             .ToArray();
     }
 
+    /// <summary>N-08：软删除索引 —— 记下回收站路径，撤销时才能把文件移回原目录。</summary>
+    public bool MarkTrashed(Guid id, string trashedPath)
+    {
+        var batch = Undo.Peek();
+        var entry = batch?.Entries.FirstOrDefault(e => e.ItemId == id);
+        if (entry is null) return false;
+        entry.TrashedPath = trashedPath;
+        return true;
+    }
+
     /// <summary>D-06：倒序恢复到原索引 / 原空位；刚恢复的不参与淘汰。</summary>
     public List<Pegged> PutBack(TakenDownBatch batch)
     {

@@ -1,5 +1,3 @@
-using ClipLine.Domain;
-
 namespace ClipLine.Application;
 
 /// <summary>
@@ -25,6 +23,22 @@ public sealed partial class AppFacade
             case TakeDownAll or TakeDownIds or FileDisappeared:
                 _clipboardDedupe.Forget(); // C-06：被取下后同一张图可再次挂上
                 break;
+
+            // ---- P3 交互全集 ----
+            case CardPointerDown e: OnCardDown(e); break;
+            case CardPointerMove e: OnCardMove(e); break;
+            case CardPointerUp e: OnCardUp(e); break;
+            case GestureTimerElapsed e: OnGestureTimer(e); break;
+            case CornerClicked e: OnCornerClicked(e.ItemId); break;
+            case ContextMenuRequested e: OnContextMenuRequested(e.ItemId); break;
+            case ContextMenuItem e: OnContextMenuItem(e); break;
+            case DragBegan e: OnDragBegan(e.ItemId); break;
+            case DragDropped e: OnDragDropped(e); break;
+            case DragRecheckElapsed e: OnDragRecheck(e); break;
+            case KeyBorrow e: OnKeyBorrow(e); break;
+            case HotKeyConflict e: OnHotKeyConflict(e); break;
+            case ShortcutRecorded e: OnShortcutRecorded(e); break;
+            case ForceClickEquivalent e: OnForceClickEquivalent(e.ItemId); break;
 
             default: break;
         }
