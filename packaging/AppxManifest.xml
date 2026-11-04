@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ClipLine MSIX 骨架（框架依赖 Windows App SDK）。
+  这是清单草稿，尚未生成实际包：需要正式 WinUI 3 / Windows App SDK 工作负载、
+  E 定稿 Logo 的多分辨率图标与 Authenticode 证书。详见 packaging/README.md。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity Name="ClipLine" Publisher="CN=ClipLine" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>ClipLine</DisplayName>
+    <PublisherDisplayName>ClipLine</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Windows 11 原生的截图晾衣绳；纯本地运行、无网络、无账号。</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22621.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-Hans" />
+    <Resource Language="en" />
+  </Resources>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="ClipLine" Executable="ClipLine.App.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="ClipLine"
+        Description="截图晾衣绳"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Square71x71Logo="Assets\SmallTile.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- A-03：开机自启由系统管理，用户在设置里可关闭 -->
+        <desktop:Extension Category="windows.startupTask" Executable="ClipLine.App.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="ClipLineStartup" Enabled="true" DisplayName="ClipLine" />
+        </desktop:Extension>
+        <!-- N-06 / X-01：稀疏包 + IExplorerCommand 右键「挂到 ClipLine」 -->
+        <desktop:Extension Category="windows.fileExplorerClassicContextMenuHandler">
+          <desktop:FileExplorerClassicContextMenuHandler Clsid="00000000-0000-0000-0000-000000000000" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

@@ -89,6 +89,10 @@ public enum CommandKind
     SetHeldWindowScale,
     SetHeldWindowActualSize,
     UpdateQuickLookIndex,
+    SetLanguageText,
+    ApplyLocalizedText,
+    ShowShortcutRecorder,
+    ShowFolderPicker,
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);

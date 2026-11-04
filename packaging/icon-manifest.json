@@ -1,0 +1,22 @@
+{
+  "source": "assets/logos/E-primary.svg",
+  "tray": [
+    "assets/logos/E-tray-16.svg",
+    "assets/logos/E-tray-16-active.svg",
+    "assets/logos/E-tray-16-idle.svg"
+  ],
+  "mono": "assets/logos/E-mono.svg",
+  "generated": [
+    { "file": "Assets/Square44x44Logo.png", "size": 44 },
+    { "file": "Assets/Square150x150Logo.png", "size": 150 },
+    { "file": "Assets/SmallTile.png", "size": 71 },
+    { "file": "Assets/StoreLogo.png", "size": 50 },
+    { "file": "Assets/ClipLine.ico", "sizes": [16, 20, 24, 32, 40, 48, 64, 256] }
+  ],
+  "rules": [
+    "16 / 20 px 必须使用独立像素对齐的 E-tray-16*.svg，禁止直接缩小 256 稿",
+    "生成后需在 Win11 圆角遮罩下核对裁切",
+    "三态共用轮廓，只改线宽 / 饱和度 / 不透明度，不加状态角标",
+    "单色母版 E-mono.svg 换白即得高对比度反白版"
+  ]
+}

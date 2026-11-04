@@ -48,6 +48,13 @@ public sealed partial class AppFacade
             case HeldWindowCommand e: OnHeldWindowCommand(e); break;
             case ShellExtensionHang e: OnShellExtensionHang(e); break;
 
+            // ---- P5 设置与打磨 ----
+            case TrayMenuOpening e: OnTrayMenuOpening(e); break;
+            case TrayMenuItemInvoked e: OnTrayMenuItemInvoked(e); break;
+            case ThemeChanged e: OnThemeChanged(e); break;
+            case SetLanguage e: OnSetLanguage(e); break;
+            case LocalizationQuery e: OnLocalizationQuery(e); break;
+
             default: break;
         }
     }
