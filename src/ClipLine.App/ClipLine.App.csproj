@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>ClipLine.AppHost</RootNamespace>
+    <AssemblyName>ClipLine</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!--
+      本机只装了 WindowsAppRuntime 1.6 的 Framework 包，缺 Main/Singleton/DDLM，
+      框架依赖部署的 bootstrap 会以 0x80670016 (STATEREPOSITORY_E_DEPENDENCY_NOT_RESOLVED) 退出。
+      self-contained 让运行时 DLL 随应用一起部署，既绕开系统包缺口，
+      也是 unpacked 应用免安装分发的标准做法，无需管理员权限。
+    -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <!--
+      v0 不嵌入自定义 manifest：纯 SDK 生成的 WinUI 3 清单已含 DPI 声明，
+      且 ShellAppHost 会显式调用 SetProcessDpiAwarenessContext(PMv2)。
+      自定义 manifest 与 SDK 清单叠加会触发 SxS「并行配置不正确」。
+      app.manifest 保留作 MSIX/签名阶段的参考。
+    -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+
+    <!--
+      纯 .NET SDK（未装 VS）没有 Microsoft.Build.Packaging.Pri.Tasks.dll。
+      v0 是 unpacked 应用且不含 .resw / XAML 资源，resources.pri 无内容可索引，
+      关闭 MRT PRI 生成即可；将来接入多语言资源时随 VS 工作负载恢复该开关。
+    -->
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+    <EnablePriGenTooling>false</EnablePriGenTooling>
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+    <IncludeProjectPriFile>false</IncludeProjectPriFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinUI 3 / Windows App SDK：本机已装 WindowsAppRuntime 1.6+（含 x64），用框架依赖部署 -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClipLine.Shell\ClipLine.Shell.csproj" />
+  </ItemGroup>
+
+</Project>

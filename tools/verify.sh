@@ -12,5 +12,8 @@ export DOTNET_CLI_TELEMETRY_OPTOUT=1
 export DOTNET_NOLOGO=1
 
 "$SDK" build "$ROOT/tests/ClipLine.Tests/ClipLine.Tests.csproj" -c Release --nologo -v minimal
+# 渲染壳（WinUI 3 / WindowsAppSDK self-contained）同样纳入编译门禁；
+# 真实桌面会话的 --smoke 由 tools/smoke.ps1 单独执行，不放进无桌面的 CI。
+"$SDK" build "$ROOT/src/ClipLine.App/ClipLine.App.csproj" -c Release --nologo -v minimal
 echo
 "$EXE" "$@"

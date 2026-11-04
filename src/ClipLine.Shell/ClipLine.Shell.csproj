@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>ClipLine.Shell</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ClipLine.Application\ClipLine.Application.csproj" />
+    <ProjectReference Include="..\ClipLine.Platform\ClipLine.Platform.csproj" />
+  </ItemGroup>
+
+</Project>
