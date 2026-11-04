@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="ClipLine 方案 C 折角卡片">
+  <defs>
+    <linearGradient id="cLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2AA9E0"/>
+      <stop offset="1" stop-color="#4F5BD5"/>
+    </linearGradient>
+    <linearGradient id="cClip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7BB5C"/>
+      <stop offset="1" stop-color="#EF8A24"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#F4F6FC"/>
+  <rect x="1" y="1" width="254" height="254" rx="55" fill="none" stroke="#E3E8F6" stroke-width="2"/>
+  <path d="M128 34 L128 92" fill="none" stroke="url(#cLine)" stroke-width="7" stroke-linecap="round"/>
+  <g transform="rotate(-12 128 80)">
+    <rect x="117" y="62" width="22" height="36" rx="8" fill="url(#cClip)"/>
+    <rect x="123" y="73" width="10" height="2.6" rx="1" fill="#FFFFFF" opacity="0.8"/>
+  </g>
+  <path d="M78 96 H158 L198 136 V188 A20 20 0 0 1 178 208 H78 A20 20 0 0 1 58 188 V116 A20 20 0 0 1 78 96 Z" fill="#FFFFFF" stroke="#DCE2F3" stroke-width="2"/>
+  <path d="M158 96 L198 136 H158 Z" fill="#F5A524"/>
+  <path d="M158 96 L178 116 H158 Z" fill="#F7BB5C"/>
+  <rect x="76" y="116" width="82" height="74" rx="9" fill="#E4F2FB"/>
+  <circle cx="100" cy="140" r="8" fill="#7CC6EA"/>
+  <path d="M80 182 L108 156 L128 174 L140 164 L154 182 Z" fill="#2AA9E0"/>
+</svg>

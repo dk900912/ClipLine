@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 180" width="560" height="180" role="img" aria-label="ClipLine 正式横向字标">
+  <defs>
+    <linearGradient id="wLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4F5BD5"/>
+      <stop offset="0.5" stop-color="#6C63F4"/>
+      <stop offset="1" stop-color="#2AA9E0"/>
+    </linearGradient>
+    <linearGradient id="wClip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7BB5C"/>
+      <stop offset="1" stop-color="#EF8A24"/>
+    </linearGradient>
+  </defs>
+  <rect width="560" height="180" rx="24" fill="#F4F6FC"/>
+  <g transform="translate(10 6) scale(0.68)">
+    <path d="M24 78 H232" fill="none" stroke="#AEBBE4" stroke-width="8" stroke-linecap="round"/>
+    <path d="M24 120 Q128 174 232 120" fill="none" stroke="url(#wLine)" stroke-width="12" stroke-linecap="round"/>
+    <rect x="115" y="60" width="26" height="94" rx="11" fill="url(#wClip)"/>
+    <rect x="121" y="74" width="14" height="3" rx="1.5" fill="#FFFFFF" opacity="0.85"/>
+    <rect x="121" y="83" width="14" height="3" rx="1.5" fill="#FFFFFF" opacity="0.55"/>
+    <circle cx="128" cy="170" r="8" fill="#4F5BD5"/>
+  </g>
+  <text x="196" y="94" font-family="Segoe UI Variable, Segoe UI, Microsoft YaHei, sans-serif" font-size="60" font-weight="600" letter-spacing="-1" fill="#252A34">ClipLine</text>
+  <text x="198" y="128" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" fill="#6B7280">截图挂起来，桌面就清爽了</text>
+</svg>

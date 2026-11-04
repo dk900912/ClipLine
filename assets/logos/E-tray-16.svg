@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="ClipLine 托盘图标 默认态 16px">
+  <path d="M2 3 H14" fill="none" stroke="#A9B6DE" stroke-width="2" stroke-linecap="round"/>
+  <path d="M2 10 Q8 14 14 10" fill="none" stroke="#4F5BD5" stroke-width="2" stroke-linecap="round"/>
+  <rect x="7" y="1.5" width="2" height="11" rx="1" fill="#F5A524"/>
+</svg>

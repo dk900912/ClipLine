@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipLine · 正式 Logo 方案 E「双线」</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 48px 32px 72px;
+    background: #FBFCFF; color: #252A34;
+    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 30px; font-weight: 650; margin: 0 0 8px; letter-spacing: -0.5px; }
+  .sub { color: #6B7280; font-size: 15px; margin: 0 0 36px; line-height: 1.7; }
+  section { margin-top: 44px; }
+  h2.sec { font-size: 19px; font-weight: 650; margin: 0 0 6px; }
+  .sec-note { font-size: 13px; color: #8A93A6; margin: 0 0 20px; line-height: 1.7; }
+
+  .hero {
+    display: flex; gap: 36px; align-items: center; flex-wrap: wrap;
+    background: linear-gradient(120deg, #FFFFFF, #F1F3FF);
+    border: 1px solid #E6EAF6; border-radius: 28px; padding: 36px;
+    box-shadow: 0 6px 24px rgba(79, 91, 213, 0.07);
+  }
+  .hero > img { width: 200px; height: 200px; flex: none; border-radius: 24px; }
+  .hero-body { flex: 1; min-width: 280px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 650; color: #FFFFFF;
+           background: linear-gradient(100deg, #4F5BD5, #7C63F4);
+           border-radius: 999px; padding: 5px 14px; margin-bottom: 16px; }
+  .hero h2 { font-size: 30px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.6px; }
+  .hero .en { font-size: 12px; color: #9AA3B8; letter-spacing: 2px; margin: 0 0 18px; }
+  .hero p { font-size: 14px; line-height: 1.85; color: #5A6273; margin: 0 0 18px; }
+  .facts { display: flex; gap: 10px; flex-wrap: wrap; }
+  .fact { background: #FFFFFF; border: 1px solid #E6EAF6; border-radius: 12px;
+          padding: 9px 13px; font-size: 12px; color: #6B7280; }
+  .fact b { display: block; color: #252A34; font-size: 14px; font-weight: 650; margin-bottom: 2px; }
+
+  .wordmark { width: 100%; max-width: 560px; border-radius: 20px; border: 1px solid #E3E8F6; display: block; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; }
+  .card { background: #FFFFFF; border: 1px solid #E6EAF6; border-radius: 20px;
+          padding: 20px; box-shadow: 0 2px 10px rgba(37, 42, 52, 0.04); }
+  .card.pick { border-color: #B9BEF7; box-shadow: 0 4px 18px rgba(79, 91, 213, 0.10); }
+  .tag { display: inline-block; font-size: 11px; font-weight: 650; color: #4F5BD5;
+         background: #EEF0FF; border-radius: 999px; padding: 3px 10px; margin-bottom: 12px; }
+  .tag.alt { color: #8A93A6; background: #F1F3F8; }
+  .tag.dim { color: #B4630B; background: #FFF2DC; }
+  .card img.tile { width: 100%; max-width: 150px; display: block; margin: 0 auto 16px; border-radius: 16px; }
+  .card h3 { font-size: 16px; margin: 0 0 4px; font-weight: 650; }
+  .card .en { font-size: 11px; color: #9AA3B8; margin: 0 0 12px; letter-spacing: .5px; }
+  .card p { font-size: 12.5px; line-height: 1.75; color: #5A6273; margin: 0; }
+  .use { margin-top: 12px; padding-top: 12px; border-top: 1px solid #EEF1F8; font-size: 12px; color: #8A93A6; }
+
+  .tray-strip { display: flex; align-items: flex-end; gap: 22px; margin-top: 14px; flex-wrap: wrap; }
+  .tray-item { text-align: center; font-size: 11px; color: #9AA3B8; }
+  .tray-item img { display: block; margin: 0 auto 7px; }
+  .tray-dark { background: #20232C; border-radius: 12px; padding: 10px 14px; }
+  .tray-dark .tray-item { color: #8D95A8; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid #EEF1F8; vertical-align: top; }
+  th { color: #8A93A6; font-weight: 600; width: 170px; }
+  td { color: #454C5C; line-height: 1.7; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+         background: #F3F5FB; padding: 2px 6px; border-radius: 5px; color: #4F5BD5; }
+
+  .palette { display: flex; gap: 8px; margin-top: 22px; align-items: center; flex-wrap: wrap; }
+  .sw { width: 30px; height: 30px; border-radius: 9px; border: 1px solid rgba(0,0,0,.06); }
+  .sw span { display: block; font-size: 11px; color: #8A93A6; margin-top: 6px; white-space: nowrap; }
+  footer { margin-top: 44px; font-size: 12px; color: #9AA3B8; line-height: 1.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ClipLine · 正式 Logo</h1>
+  <p class="sub">2026-11-04 决策：采用<strong>方案 E「双线」</strong>为正式品牌 Logo。本页展示主图标、字标锁排、三态托盘派生与小尺寸规范；其余四案保留为备选与延展资产。</p>
+
+  <div class="hero">
+    <img src="E-primary.svg" alt="ClipLine 正式主图标">
+    <div class="hero-body">
+      <span class="badge">正式 Logo · 方案 E</span>
+      <h2>双线</h2>
+      <div class="en">TWO LINES</div>
+      <p>上面一条直线是刚产生的截图，下面一条下垂的线是挂上晾衣绳，中间一枚夹子把两者连起来。Logo 本身就是产品的核心动作——<strong>直线缓缓坠成弧线</strong>，正好复刻绳子滑下的展开动画。</p>
+      <div class="facts">
+        <div class="fact"><b>256 × 256</b>圆角方底 r=56</div>
+        <div class="fact"><b>16 px</b>最小可用尺寸</div>
+        <div class="fact"><b>3 态</b>默认 / 开启 / 空绳</div>
+        <div class="fact"><b>2 色系</b>靛蓝渐变 + 暖橙</div>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <h2 class="sec">字标锁排</h2>
+    <p class="sec-note">图形 + <code>ClipLine</code> + 中文副标。副标只作说明，不参与产品命名。图形左侧与文字之间留 1 个夹子宽度（26 u）以上净空。</p>
+    <img class="wordmark" src="wordmark.svg" alt="ClipLine 横向字标">
+  </section>
+
+  <section>
+    <h2 class="sec">三态托盘图标</h2>
+    <p class="sec-note">对齐功能清单的硬性约束：默认描边态、开启「挂上复制的图片」时的填充态、绳上为空时的变暗态。16 px 稿为<strong>像素对齐的独立绘制</strong>，不是把 256 稿直接缩小；省略上线与坠点以获得清晰轮廓。</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">默认态 · DEFAULT</span>
+        <div class="tray-strip">
+          <div class="tray-item"><img src="E-tray-16.svg" width="16" height="16" alt="">16</div>
+          <div class="tray-item"><img src="E-tray-16.svg" width="24" height="24" alt="">24</div>
+          <div class="tray-item"><img src="E-tray-16.svg" width="32" height="32" alt="">32</div>
+          <div class="tray-item"><img src="E-tray-16.svg" width="48" height="48" alt="">48</div>
+        </div>
+        <div class="use">上线浅靛蓝 / 弧线主色 / 夹子暖橙</div>
+      </div>
+      <div class="card">
+        <span class="tag dim">监听开启 · ACTIVE</span>
+        <div class="tray-strip">
+          <div class="tray-item"><img src="E-tray-16-active.svg" width="16" height="16" alt="">16</div>
+          <div class="tray-item"><img src="E-tray-16-active.svg" width="24" height="24" alt="">24</div>
+          <div class="tray-item"><img src="E-tray-16-active.svg" width="32" height="32" alt="">32</div>
+          <div class="tray-item"><img src="E-tray-16-active.svg" width="48" height="48" alt="">48</div>
+        </div>
+        <div class="use">弧线加粗、夹子实心、上线转紫</div>
+      </div>
+      <div class="card">
+        <span class="tag alt">空绳变暗 · IDLE</span>
+        <div class="tray-strip">
+          <div class="tray-item"><img src="E-tray-16-idle.svg" width="16" height="16" alt="">16</div>
+          <div class="tray-item"><img src="E-tray-16-idle.svg" width="24" height="24" alt="">24</div>
+          <div class="tray-item"><img src="E-tray-16-idle.svg" width="32" height="32" alt="">32</div>
+          <div class="tray-item"><img src="E-tray-16-idle.svg" width="48" height="48" alt="">48</div>
+        </div>
+        <div class="use">统一灰度、整体不透明度 0.7</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <span class="tag">深色任务栏实测</span>
+      <div class="tray-strip tray-dark" style="margin-top:0">
+        <div class="tray-item"><img src="E-tray-16.svg" width="16" height="16" alt="">默认</div>
+        <div class="tray-item"><img src="E-tray-16-active.svg" width="16" height="16" alt="">开启</div>
+        <div class="tray-item"><img src="E-tray-16-idle.svg" width="16" height="16" alt="">空绳</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">单色、反白与动态标识</h2>
+    <p class="sec-note">单色版用于高对比度模式、传真与单色印刷；反白版把 <code>#252A34</code> 全局替换为 <code>#FFFFFF</code>。动态标识用于启动画面、加载态与「新图上线」提示。</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag">单色版 · MONO</span>
+        <img class="tile" src="E-mono.svg" alt="单色版">
+        <div class="use">透明底，靠线宽与明度区分层次</div>
+      </div>
+      <div class="card">
+        <span class="tag">反白版 · REVERSED</span>
+        <div style="background:#252A34;border-radius:16px;padding:18px;margin-bottom:16px">
+          <img class="tile" src="E-mono.svg" style="filter:brightness(0) invert(1);margin-bottom:0" alt="反白版">
+        </div>
+        <div class="use">深色主题、启动闪屏、商店磁贴</div>
+      </div>
+      <div class="card">
+        <span class="tag">动态标识 · MOTION</span>
+        <img class="tile" src="E-motion.svg" alt="直线坠成弧线的循环动画">
+        <div class="use">直线 → 弧线 → 停留 → 复位，循环 3.2 s</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">规格速查</h2>
+    <table>
+      <tr><th>几何</th><td>256×256 网格，圆角方底 <code>r=56</code>，安全边距 24；上线 <code>M24 78 H232</code>（宽 8）；下线 <code>M24 120 Q128 174 232 120</code>（宽 12）；夹子 <code>26×94 / r=11</code>；坠点 <code>r=8</code>。</td></tr>
+      <tr><th>配色</th><td>绳 <code>#4F5BD5 → #6C63F4 → #2AA9E0</code>；夹子 <code>#F7BB5C → #EF8A24</code>；上线 <code>#AEBBE4</code>；底板 <code>#FFFFFF → #EEF1FC</code>；字 <code>#252A34</code>。</td></tr>
+      <tr><th>尺寸阶梯</th><td>16 / 20 / 24 / 32 / 48 / 64 / 256。<strong>16 px 与 20 px 必须使用专用简化稿</strong>（省略上线与坠点、坐标对齐整像素），24 px 以上用主图标等比缩放。</td></tr>
+      <tr><th>状态</th><td>默认 / 监听开启 / 空绳变暗，三态共用同一轮廓，只改线宽、饱和度与不透明度；不得靠加角标表达状态。</td></tr>
+      <tr><th>动效</th><td>直线 <code>Q128 78</code> → 弧线 <code>Q128 174</code>，展开 <code>0.65 s</code> 缓出、停留 <code>0.9 s</code>、复位 <code>0.45 s</code>；与界面里绳子滑下动画同曲线。</td></tr>
+      <tr><th>落地</th><td>按技术文档约定用 Win2D / Composition 代码绘制，构建期栅格化生成多分辨率 <code>.ico</code> 与 MSIX 图标资产，不打包位图源文件。</td></tr>
+    </table>
+    <div class="palette">
+      <div><div class="sw" style="background:#4F5BD5"></div><span>#4F5BD5</span></div>
+      <div><div class="sw" style="background:#6C63F4"></div><span>#6C63F4</span></div>
+      <div><div class="sw" style="background:#2AA9E0"></div><span>#2AA9E0</span></div>
+      <div><div class="sw" style="background:#F5A524"></div><span>#F5A524</span></div>
+      <div><div class="sw" style="background:#252A34"></div><span>#252A34</span></div>
+      <div><div class="sw" style="background:#F4F6FC"></div><span>#F4F6FC</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">备选与延展</h2>
+    <p class="sec-note">四案不再是主 Logo 候选，保留为特定场景的延展资产；共用同一套配色与 24 u 安全边距，混用不会打架。</p>
+    <div class="grid">
+      <div class="card">
+        <span class="tag alt">延展 · 营销主视觉</span>
+        <img class="tile" src="A-sag-and-clip.svg" alt="方案 A 悬线">
+        <h3>A 悬线</h3><div class="en">SAG &amp; CLIP</div>
+        <p>官网 Hero、商店头图、README。弧线与界面里的绳同公式。</p>
+      </div>
+      <div class="card">
+        <span class="tag alt">备选 · 小尺寸替补</span>
+        <img class="tile" src="B-monogram-c.svg" alt="方案 B C 形绳">
+        <h3>B C 形绳</h3><div class="en">MONOGRAM C</div>
+        <p>若 16 px 实测辨识不足，作为托盘图标的回退方案。</p>
+      </div>
+      <div class="card">
+        <span class="tag alt">延展 · 文件类型图标</span>
+        <img class="tile" src="C-folded-photo.svg" alt="方案 C 折角卡片">
+        <h3>C 折角卡片</h3><div class="en">FOLDED PHOTO</div>
+        <p>右键扩展「挂到 ClipLine」、图片文件关联入口。</p>
+      </div>
+      <div class="card">
+        <span class="tag alt">延展 · 辅助图形</span>
+        <img class="tile" src="D-knot.svg" alt="方案 D 绳结">
+        <h3>D 绳结</h3><div class="en">KNOT</div>
+        <p>启动画面、周边、分隔固定照片的界面彩蛋。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    决策记录：2026-11-04 用户确认采用方案 E「双线」为正式 Logo；原推荐 B「C 形绳」降为小尺寸回退备选。<br>
+    正式资产：<code>E-primary.svg</code> / <code>wordmark.svg</code> / <code>E-tray-16*.svg</code> / <code>E-mono.svg</code> / <code>E-motion.svg</code>；<code>E-two-lines.svg</code> 保留为原始概念稿。<br>
+    全部 SVG 为纯矢量、无外链字体、无位图；颜色显式写在元素上。详见 docs/04-brand-logo.md。
+  </footer>
+</div>
+</body>
+</html>

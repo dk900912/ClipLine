@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="ClipLine 托盘图标 空绳变暗态 16px">
+  <g opacity="0.7">
+    <path d="M2 3 H14" fill="none" stroke="#D2D8E4" stroke-width="2" stroke-linecap="round"/>
+    <path d="M2 10 Q8 14 14 10" fill="none" stroke="#AEB6C6" stroke-width="2" stroke-linecap="round"/>
+    <rect x="7" y="1.5" width="2" height="11" rx="1" fill="#C9CFDC"/>
+  </g>
+</svg>

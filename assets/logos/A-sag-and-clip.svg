@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="ClipLine 方案 A 悬线">
+  <defs>
+    <linearGradient id="aLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4F5BD5"/>
+      <stop offset="1" stop-color="#7C63F4"/>
+    </linearGradient>
+    <linearGradient id="aClip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7BB5C"/>
+      <stop offset="1" stop-color="#EF8A24"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#F4F6FC"/>
+  <rect x="1" y="1" width="254" height="254" rx="55" fill="none" stroke="#E3E8F6" stroke-width="2"/>
+  <path d="M24 78 Q128 110 232 78" fill="none" stroke="url(#aLine)" stroke-width="8" stroke-linecap="round"/>
+  <rect x="118" y="86" width="20" height="34" rx="7" fill="url(#aClip)"/>
+  <rect x="124" y="95" width="8" height="2.4" rx="1" fill="#FFFFFF" opacity="0.75"/>
+  <rect x="74" y="112" width="108" height="82" rx="16" fill="#FFFFFF" stroke="#DCE2F3" stroke-width="2"/>
+  <rect x="85" y="123" width="86" height="60" rx="9" fill="#E9EDFC"/>
+  <circle cx="110" cy="142" r="8" fill="#9BA9F0"/>
+  <path d="M88 176 L118 150 L140 168 L154 156 L168 176 Z" fill="#6C7BE8"/>
+</svg>
