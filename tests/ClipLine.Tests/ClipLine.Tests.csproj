@@ -7,5 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ClipLine.Domain\ClipLine.Domain.csproj" />
     <ProjectReference Include="..\..\src\ClipLine.Application\ClipLine.Application.csproj" />
+    <ProjectReference Include="..\..\src\ClipLine.Platform\ClipLine.Platform.csproj" />
   </ItemGroup>
 </Project>

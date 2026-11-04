@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ClipLine.Platform</RootNamespace>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ClipLine.Domain\ClipLine.Domain.csproj" />
+    <ProjectReference Include="..\ClipLine.Application\ClipLine.Application.csproj" />
+  </ItemGroup>
+</Project>

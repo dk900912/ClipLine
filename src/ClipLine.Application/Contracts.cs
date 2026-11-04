@@ -75,6 +75,7 @@ public enum CommandKind
     SetLaunchAtLogin,
     SetReduceMotion,
     SetTheme,
+    SetFlightOrigin,
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);

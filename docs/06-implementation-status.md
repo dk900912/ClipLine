@@ -42,15 +42,21 @@ bash tools/verify.sh
 DOTNET_SDK="/c/Users/.../Temp/clipline-tools/dotnet/dotnet.exe" bash tools/verify.sh
 ```
 
-`tools/verify.sh` 先编译 `ClipLine.sln` 涉及的三个项目，再跑全部测试；退出码非 0 表示有用例失败。
+`tools/verify.sh` 先编译 `ClipLine.sln` 涉及的四个项目（Domain / Application / Platform / Tests），再跑全部测试；退出码非 0 表示有用例失败。
+
+### 3.1 P2 的平台适配器（`src/ClipLine.Platform/`）
+
+零 NuGet 依赖、可编译的真实 Win32 P/Invoke 封装：`AddClipboardFormatListener`（消息驱动，空闲零开销）、`ReadDirectoryChangesW`（`FILE_NOTIFY_INFORMATION` 解析 + 0.2 s 防抖）、`SystemParametersInfoW(SPI_GETWORKAREA)` 取主屏工作区、`GetDpiForSystem` 换算单一系统缩放、`RegisterHotKey`、`SHFileOperationW(FOF_ALLOWUNDO)` 回收站、以及 P0 结论要求的**独立 message-only 托盘宿主窗口**。`PlatformCommandSink` 把门面命令映射到这些适配器，渲染类命令显式记录为未处理，由后续 WinUI 层消费。
+
+正式产品按 `02-tech-stack.md` 仍改用 **CsWin32 源生成器**；当前手写声明只为在没有工作负载的本机把平台边界编译验证一遍。
 
 ## 4. 阶段进度
 
 | 阶段 | 工单 | 状态 | 主要交付 |
 |---|---|---|---|
 | P0 | #2 | ✅ 已关闭 | 透明分层 HWND 技术切片（`spikes/p0-layered-hwnd/`，20/20 自检） |
-| P1 | #3 | ✅ 本次 | 领域模型 + 应用门面 + 46 条用例 |
-| P2 | #4 | 待推进 | 捕获链路、完整性校验、飞入 |
+| P1 | #3 | ✅ 已完成（提交 `648869b`） | 领域模型 + 应用门面 + 46 条用例 |
+| P2 | #4 | ✅ 已完成 | 三层捕获准入、完整性校验、剪贴板过滤、飞入参数、Win32 适配器 + 23 条用例 |
 | P3 | #5 | 待推进 | 手势全集、右键菜单、拖放语义、热键 |
 | P4 | #6 | 待推进 | 预览 / 标注 / 修剪 / 拿在手上 / 右键扩展 |
 | P5 | #7 | 待推进 | 16 项菜单、11 语言、主题与无障碍、打包清单 |
