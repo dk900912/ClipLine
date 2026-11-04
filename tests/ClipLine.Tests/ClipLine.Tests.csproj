@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ClipLine.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ClipLine.Domain\ClipLine.Domain.csproj" />
+    <ProjectReference Include="..\..\src\ClipLine.Application\ClipLine.Application.csproj" />
+  </ItemGroup>
+</Project>
