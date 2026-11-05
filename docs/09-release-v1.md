@@ -426,3 +426,41 @@ tan(14°)≈0.25 意味着每 4 行才跳 1 像素，垂直边框变成台阶 �
 | 真实客户端复核 | 启动最终便携包查询**真实** GitHub API：`APP_ALIVE=True`、`v1.0.1` 下载目录数 = 0、updater helper 进程数 = 0、诊断日志异常行 = 0 → 同版本不触发自更新 |
 
 **状态**：`HEAD = origin/main = ca28582`，附注 tag `v1.0.1` 已推送，公开 Release 已发布。本机所有测试进程已停止、MSIX 解包开发包已卸载、临时 deploy key 已删除、用户真实 `state.json` 已还原（`Pegged=1 / Kept=1`）。本轮未写任何 GitHub Issue 评论。
+
+## 14. v1.7：拖放出向与文字/马赛克标注（2026-11-06，用户要求「完成 1 和 3」）
+
+上一轮把 P0-5（OLE 拖放）与 P1-10（文字 / 马赛克）判为「v1 不做」并写进 `docs/11` §5.1，用户直接否掉。两项均按真做重写，§5.1 原结论已作废，翻案与教训记在 `docs/11` §5.2。
+
+### 14.1 新增与改动
+
+| 文件 | 内容 |
+|---|---|
+| `src/ClipLine.Shell/DragDrop.cs`（新，461 行） | 出向 OLE 拖放。自实现 **全 blittable** `IDataObject` / `IDropSource` / `IEnumFORMATETC`，用 `Marshal.GetComInterfaceForObject` 交给 `DoDragDrop`；只暴露 `CF_HDROP`（`DROPFILES` 头 + UTF-16 路径 + 双零结尾）。拖拽图走 `IDragSourceHelper`，`ColorKey = 0xFFFFFFFF`（用自带 alpha）。`DragOutcome` 由**磁盘事实**判定，不信目标的 `DROPEFFECT`。 |
+| `src/ClipLine.Shell/TextInputWindow.cs`（新，476 行） | 文字输入窗：普通窗口 + 原生 `EDIT`（多行 / `ES_WANTRETURN` / 垂直滚动），`WM_GETDLGCODE` 返回 `DLGC_WANTALLKEYS`，子类化只截 `Esc` 与 `Ctrl+Enter`；`WM_CTLCOLOREDIT` 回主题色刷。布局走 `GetClientRect`。 |
+| `RopeWindow.cs` | 按下 `SetCapture` → 移动超过 `SM_CXDRAG`/`SM_CYDRAG` → `Post(BeginDragOut)`；`DraggingOut` 暴露给验证；拖放结果转成 `RopeDragEvent`。 |
+| `RopeCanvas.cs` | 拖拽源卡片 `_alphaScale = 0.45`；`CreateCardDragBitmap` 把卡片 + 22 DIP 夹子区域拷成顶向下 32bpp DIBSection；`DrawTextShapeOnCanvas` / `BlitInk`（灰度蒙版 + 3×3 描边）；`DrawMosaicOnCanvas`（读已绘制像素按 `max(6, 12 DIP)` 块平均回填）；工具栏 4 → 6 个线性图标（`T` / 3×3 方格）。 |
+| `ToolWindow.cs` | `MarkShape` 增 `Text` / `Size` 与六个 Kind；文字点击走 `_textPending` → `TextInputWindow`；`[` `]` 调字号；草稿 `DraftShape` 增 `T`/`S`（旧草稿缺字段按 null/0 读）；`WM_CAPTURECHANGED` 收尾（笔迹落最后一点，不留幽灵预览）。 |
+| `ShellAppHost.cs` | `UpdateHitTest` 在 `GetCapture() == Rope.Handle` 时直接返回 —— 捕获期间改 passthrough 会重设窗口样式并丢捕获，拖放永远起不来。 |
+| `RealInputBridge.cs` | `Rope.Drag` 订阅：`Moved` 且路径已不存在 → 复用 `FileDisappeared` 下线；`RopeWindow.Trace` / `ToolWindow.Trace` 接到本地诊断日志。 |
+
+### 14.2 踩到的坑（都已固化成代码注释）
+
+1. **托管「导入接口」不能用来实现 `IDataObject`**：`ComTypes.IDataObject` 生成的 CCW vtable 与 OLE 期望不一致，`DoDragDrop` 内部直接崩 CLR（`0x80131506`）。改成自定义全 blittable 接口 + `Marshal.GetComInterfaceForObject` 才稳定；接口与外层类还必须是 `public`，否则抛「The specified type must be visible from COM」。
+2. **`GetTextExtentPoint32W` 在 `gdi32.dll`，不在 `user32.dll`**（v1.7 首次跑点击验证时以 `EntryPointNotFoundException` 崩溃）。文字宽度测量一上来就踩到。
+3. **标注草稿是「崩溃后可恢复」的**，会按原图路径在下次打开时回填。点击夹具的图片路径固定，上一轮崩溃留下的草稿让形状数凭空 +1 —— 夹具必须先删 `%TEMP%\ClipLine\markup-draft.json`。
+4. **注入的鼠标事件延迟不可假设**：`mouse_event` 进的是系统输入队列，忙时抬起比调用晚 300+ ms 才被处理，固定 `Sleep` 会读到旧模型（马赛克那项就因此假失败一次）。验证改成轮询模型直到条数到位。
+
+### 14.3 门禁结果（同一份工作区）
+
+| 门禁 | 结果 |
+|---|---|
+| `bash tools/verify.sh` | **151/151 PASS**，编译 0 警告 0 错误 |
+| `tools/smoke.ps1`（`--smoke`，真实桌面） | **36/36 PASS**（新增「CF_HDROP 载荷正确、去留按磁盘判定」与「键盘可达」） |
+| `tools/ui-click-verify.ps1`（`--ui-click`，真实输入注入） | **33/33 PASS**（25 → 33：新增文字输入窗客户区布局、输入窗整屏证据、中文落字、马赛克落区、拖放中截屏、Esc 取消） |
+| `tools/menu-audit.ps1` | `OK=42 / DEGRADED=3 / SKIP=0 / FAIL=0`，与 v1.0.1 基线一致 |
+
+证据（`%TEMP%\clipline-uiclick\`）：`frame-markup-text.png`（中文「打码测试」落字）、`frame-markup-mosaic.png`（条纹底图上的块化区域）、`screen-markup-textinput.png`（输入窗真实在桌面上，`EDIT=(20,20)-(562,283)` 全在 582×353 客户区内）、`screen-drag-out.png`（拖放进行中：源卡片变淡 + 指针处拖拽预览）。
+
+### 14.4 仍未做
+
+入向拖放（拖进绳窗口）；标注「裁剪」笔型（需要重编码并覆盖原图，与「绝不覆盖用户原图」冲突）；卡片级 UIA；Mica/Acrylic。清单见 `docs/11` §5.1。
