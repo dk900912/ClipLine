@@ -106,7 +106,7 @@ public sealed class UpdateTests : ITestSuite
             Check.True(r.Has(CommandKind.ShowUpdateNotice), "有失败提示");
         });
 
-        t.Case("U-09", "校验通过即自动安装（方案 D 全自动）", () =>
+        t.Case("U-09", "校验通过只进入待确认：不自动安装，确认后才发 InstallUpdate", () =>
         {
             var f = new Fixture(); f.Start();
             f.Send(new CheckForUpdates());
@@ -114,8 +114,37 @@ public sealed class UpdateTests : ITestSuite
             string pkg = @"C:\update\ClipLine_1.0.1.0_x64_portable.zip";
             var r = f.Send(new UpdateDownloadCompleted(pkg, null));
             Check.Equal(UpdatePhase.Ready, r.State.Update.Phase, "就绪");
-            Check.Equal(pkg, r.Arg(CommandKind.InstallUpdate), "自动发出安装命令");
+            Check.True(!r.Has(CommandKind.InstallUpdate), "绝不自动安装");
             Check.Equal(pkg, r.State.Update.LocalPackage, "快照记录本地包");
+            var confirmed = f.Send(new UpdateInstallConfirmed());
+            Check.Equal(pkg, confirmed.Arg(CommandKind.InstallUpdate), "确认后才安装");
+        });
+
+        t.Case("U-09b", "推迟更新：保留已下载包，本会话不再打扰", () =>
+        {
+            var f = new Fixture(); f.Start();
+            f.Send(new CheckForUpdates());
+            f.Send(new UpdateCheckCompleted(NewVersion, AssetUrl, ShaUrl, null));
+            f.Send(new UpdateDownloadCompleted("pkg.zip", null));
+            var r = f.Send(new UpdateDeferred());
+            Check.Equal(UpdatePhase.Ready, r.State.Update.Phase, "仍保留就绪态");
+            Check.True(r.State.Update.Deferred, "标记为已推迟");
+            Check.True(!r.Has(CommandKind.InstallUpdate), "推迟不触发安装");
+            var again = f.Send(new CheckForUpdates());
+            Check.True(!again.State.Update.Deferred, "手动再检查时重新提示");
+            Check.True(!again.Has(CommandKind.InstallUpdate), "也不会偷偷安装");
+        });
+
+        t.Case("U-09c", "下载中可取消：进入失败态并发出取消命令", () =>
+        {
+            var f = new Fixture(); f.Start();
+            f.Send(new CheckForUpdates());
+            f.Send(new UpdateCheckCompleted(NewVersion, AssetUrl, ShaUrl, null));
+            f.Send(new UpdateProgress(40));
+            var r = f.Send(new CancelUpdateDownload());
+            Check.Equal(UpdatePhase.Failed, r.State.Update.Phase, "取消后终止");
+            Check.True(r.Has(CommandKind.CancelUpdateDownload), "通知平台层取消");
+            Check.True(!r.Has(CommandKind.InstallUpdate), "不安装");
         });
 
         t.Case("U-10", "安装失败给出明确原因，不假装成功", () =>
@@ -124,6 +153,7 @@ public sealed class UpdateTests : ITestSuite
             f.Send(new CheckForUpdates());
             f.Send(new UpdateCheckCompleted(NewVersion, AssetUrl, ShaUrl, null));
             f.Send(new UpdateDownloadCompleted("pkg.zip", null));
+            f.Send(new UpdateInstallConfirmed());
             var r = f.Send(new UpdateInstallCompleted(false, "证书不受信任"));
             Check.Equal(UpdatePhase.Failed, r.State.Update.Phase, "失败态");
             Check.Contains("证书不受信任", r.Arg(CommandKind.ShowUpdateNotice), "含原因");
@@ -135,6 +165,7 @@ public sealed class UpdateTests : ITestSuite
             f.Send(new AutoUpdateTick());
             f.Send(new UpdateCheckCompleted(NewVersion, AssetUrl, ShaUrl, null));
             f.Send(new UpdateDownloadCompleted("pkg.zip", null));
+            f.Send(new UpdateInstallConfirmed());
             var r = f.Send(new UpdateInstallCompleted(true, null));
             Check.Equal(UpdatePhase.Installing, r.State.Update.Phase, "安装中");
             Check.True(r.Has(CommandKind.ShowUpdateNotice), "提示即将重启");
@@ -160,6 +191,7 @@ public sealed class UpdateTests : ITestSuite
                 .Commands.Select(c => c.Kind));
             chain.AddRange(f.Send(new UpdateDownloadCompleted("pkg.zip", null))
                 .Commands.Select(c => c.Kind));
+            chain.AddRange(f.Send(new UpdateInstallConfirmed()).Commands.Select(c => c.Kind));
             chain.AddRange(f.Send(new UpdateInstallCompleted(true, null))
                 .Commands.Select(c => c.Kind));
             Check.True(chain.Contains(CommandKind.RunUpdateCheck), "有检查");

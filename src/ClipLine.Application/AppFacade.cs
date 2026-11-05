@@ -264,6 +264,9 @@ public sealed partial class AppFacade
             case UpdateProgress e: OnUpdateProgress(e); break;
             case UpdateDownloadCompleted e: OnUpdateDownloadCompleted(e); break;
             case UpdateInstallCompleted e: OnUpdateInstallCompleted(e); break;
+            case UpdateInstallConfirmed: OnUpdateInstallConfirmed(); break;
+            case UpdateDeferred: OnUpdateDeferred(); break;
+            case CancelUpdateDownload: OnCancelUpdateDownload(); break;
 
             case HotZoneElapsed e: OnHotZoneElapsed(e); break;
             case RetractElapsed e:

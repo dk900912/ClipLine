@@ -97,7 +97,9 @@ public enum CommandKind
     RunUpdateCheck,
     DownloadUpdate,
     InstallUpdate,
+    CancelUpdateDownload,
     ShowUpdateNotice,
+    HideUpdatePanel,
 }
 
 /// <summary>自动更新的外部可观察阶段；Idle/Offline 不打扰用户。</summary>
@@ -126,6 +128,9 @@ public sealed record UpdateSnapshot
     public string Message { get; init; } = string.Empty;
     public int Progress { get; init; }
     public bool Manual { get; init; }
+
+    /// <summary>用户点了「稍后」：本次会话不再弹面板，下次启动/手动检查再提示。</summary>
+    public bool Deferred { get; init; }
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);
@@ -239,6 +244,15 @@ public sealed record UpdateProgress(int Percent) : AppInput;
 public sealed record UpdateDownloadCompleted(string LocalPackage, string? Error) : AppInput;
 /// <summary>安装执行结果；成功时便携通道已由 helper 重启应用。</summary>
 public sealed record UpdateInstallCompleted(bool Success, string? Error) : AppInput;
+
+/// <summary>用户在更新面板明确点了「立即重启更新」——安装/重启必须有这一步确认（P0-3）。</summary>
+public sealed record UpdateInstallConfirmed : AppInput;
+
+/// <summary>用户点了「稍后」：保留已下载的包，但本次会话不再提示。</summary>
+public sealed record UpdateDeferred : AppInput;
+
+/// <summary>取消正在进行的后台下载；已校验的包不受影响。</summary>
+public sealed record CancelUpdateDownload : AppInput;
 
 // ---- 内部调度事件（假时钟推进时触发，外部不构造） ----
 internal sealed record HotZoneElapsed(long Token) : AppInput;

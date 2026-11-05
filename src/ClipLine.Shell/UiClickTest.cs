@@ -359,6 +359,7 @@ public static class UiClickTest
                 "canvas" => win.Layout.Canvas,
                 "save" => win.Layout.Save,
                 "putback" => win.Layout.PutBack,
+                "confirmdiscard" => win.Layout.ConfirmDiscard,
                 _ => win.Layout.Close,
             };
             info = (win.Handle, r.X, r.Y, r.W, r.H);
@@ -475,7 +476,31 @@ public static class UiClickTest
         string marked = Path.Combine(s_root, "frame-markup-drawn.png");
         OnUi(() => s_host!.Tools.DumpFrame(ToolMode.Markup, marked));
         Evidence.Add(marked);
+
+        // P0-2：带未保存标注点关闭，必须先出现三选一，不能直接丢内容。
         CloseTool(ToolMode.Markup);
+        bool stillOpen = false, confirming = false;
+        OnUi(() =>
+        {
+            ToolWindow? win = s_host!.Tools.Get(ToolMode.Markup);
+            stillOpen = win?.IsVisible ?? false;
+            confirming = win?.IsConfirming ?? false;
+        });
+        Check("标记 → 有未保存内容时关闭先弹「保存/丢弃/取消」", stillOpen && confirming,
+            $"仍可见={stillOpen} 确认中={confirming}");
+        string confirmShot = Path.Combine(s_root, "frame-markup-confirm.png");
+        OnUi(() => s_host!.Tools.DumpFrame(ToolMode.Markup, confirmShot));
+        Evidence.Add(confirmShot);
+
+        var discard = ToolButton(ToolMode.Markup, "confirmdiscard");
+        if (discard is not null)
+        {
+            (int X, int Y)? pt = ButtonScreenPoint(discard.Value);
+            if (pt is not null) { LeftClick(pt.Value.X, pt.Value.Y); Thread.Sleep(220); }
+        }
+        bool closed = false;
+        OnUi(() => closed = !s_host!.Tools.IsVisible(ToolMode.Markup));
+        Check("标记 → 选择「丢弃」后窗口才关闭", closed, $"已关闭={closed}");
     }
 
     private static void VerifyHeld()

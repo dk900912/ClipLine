@@ -449,11 +449,120 @@ internal static class ShellNative
     internal const uint WM_CLOSE = 0x0010;
     internal const int SW_SHOW = 5;
 
+    // ---- v1.6：原生窗口行为 / 主题热切换 / 高 DPI ----
+    internal const uint WM_SETTINGCHANGE = 0x001A;
+    internal const uint WM_THEMECHANGED = 0x031A;
+    internal const uint WM_SETFOCUS = 0x0007;
+    internal const uint WM_KILLFOCUS = 0x0008;
+    internal const uint WM_CONTEXTMENU = 0x007B;
+    internal const int EventObjectNameChange = 0x800C;
+    internal const int ObjidWindow = 0;
+    internal const int SwpNoZorder = 0x0004;
+    internal const uint WM_DPICHANGED = 0x02E0;
+    internal const uint WM_MOUSELEAVE = 0x02A3;
+    internal const uint WM_NCHITTEST = 0x0084;
+    internal const uint WM_GETOBJECT = 0x003C;
+    internal const uint WM_MENUCHAR = 0x0120;
+    internal const int HtCaption = 2;
+    internal const int HtLeft = 10;
+    internal const int HtRight = 11;
+    internal const int HtTop = 12;
+    internal const int HtTopLeft = 13;
+    internal const int HtTopRight = 14;
+    internal const int HtBottom = 15;
+    internal const int HtBottomLeft = 16;
+    internal const int HtBottomRight = 17;
+    internal const uint TmeLeave = 0x00000002;
+    internal const uint TPM_WORKAREA = 0x10000;
+    internal const int SmCxDoubleClk = 36;
+    internal const int SmCyDoubleClk = 37;
+
+    internal const int ColorWindow = 5;
+    internal const int ColorWindowText = 8;
+    internal const int ColorHighlight = 13;
+    internal const int ColorHighlightText = 14;
+    internal const int ColorBtnFace = 15;
+    internal const int ColorBtnShadow = 16;
+    internal const int ColorGrayText = 17;
+    internal const int ColorWindowFrame = 6;
+    internal const int ColorBtnHighlight = 20;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct TRACKMOUSEEVENT
+    {
+        public uint CbSize;
+        public uint DwFlags;
+        public IntPtr HwndTrack;
+        public uint DwHoverTime;
+    }
+
+    internal enum QUERY_USER_NOTIFICATION_STATE
+    {
+        NotPresent = 1,
+        Busy = 2,
+        RunningD3dFullScreen = 3,
+        PresentationMode = 4,
+        AcceptsNotifications = 5,
+        QuietTime = 6,
+        App = 7,
+    }
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSysColor(int nIndex);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetCapture();
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
+
+    [DllImport("shell32.dll")]
+    internal static extern int SHQueryUserNotificationState(out QUERY_USER_NOTIFICATION_STATE state);
+
+    [DllImport("user32.dll", EntryPoint = "GetTextExtentPoint32W", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetTextExtentPoint32W(IntPtr hdc, string lpString, int c,
+        out SIZE psizl);
+
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute,
+        ref int pvAttribute, int cbAttribute);
+
+    internal const int DwmwaUseImmersiveDarkMode = 20;
+    internal const int DwmwaWindowCornerPreference = 33;
+    internal const int DwmwcpRound = 2;
+
     internal const byte VkEscape = 0x1B;
     internal const byte VkSpace = 0x20;
     internal const byte VkLeft = 0x25;
     internal const byte VkRight = 0x27;
     internal const byte VkC = 0x43;
+    internal const byte VkS = 0x53;
+    internal const byte VkQ = 0x51;
+    internal const byte VkY = 0x59;
+    internal const byte VkZ = 0x5A;
+    internal const byte VkDelete = 0x2E;
+    internal const byte VkTab = 0x09;
+    internal const byte VkEnter = 0x0D;
+    internal const byte VkUp = 0x26;
+    internal const byte VkDown = 0x28;
+    internal const byte VkF10 = 0x79;
+    internal const byte VkShift = 0x10;
+    internal const byte VkControl = 0x11;
+    internal const byte VkMenu = 0x12;
+    internal const byte VkLWin = 0x5B;
+    internal const byte VkApps = 0x5D;
     internal const uint MkLButton = 0x0001;
     internal const uint KeyeventfKeyup = 0x0002;
 
@@ -473,6 +582,14 @@ internal static class ShellNative
 
     [DllImport("user32.dll")]
     internal static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
+
+    /// <summary>无障碍事件：窗口名变化后让 Narrator 重新朗读（P0-6）。</summary>
+    [DllImport("user32.dll")]
+    internal static extern void NotifyWinEvent(int eventId, IntPtr hWnd, int idObject, int idChild);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

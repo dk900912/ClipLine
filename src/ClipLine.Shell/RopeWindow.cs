@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using ClipLine.Domain;
 
@@ -15,6 +16,10 @@ public enum RopeMouseKind
 /// <summary>卡片区鼠标事件；坐标是窗口客户区物理像素。</summary>
 public readonly record struct RopeMouseEvent(
     RopeMouseKind Kind, int X, int Y, int CardIndex, Guid ItemId, int WheelDelta);
+
+/// <summary>绳窗口的键盘事件（P0-6）；CardIndex = -1 表示没有选中卡片。</summary>
+public readonly record struct RopeKeyEvent(
+    uint VirtualKey, int CardIndex, Guid ItemId, bool Ctrl, bool Shift);
 
 /// <summary>
 /// 自管分层 HWND 绳窗口（P0 结论的落地）：
@@ -40,6 +45,9 @@ public sealed class RopeWindow : IDisposable
     private IntPtr _hwnd;
     private bool _transparent = true;
     private RopeFrame? _frame;
+    private int _focusIndex = -1;
+    private int _hoverIndex = -1;
+    private bool _keyboard;
 
     public RopeWindow(double scale) => _scale = scale <= 0 ? 1.0 : scale;
 
@@ -49,8 +57,15 @@ public sealed class RopeWindow : IDisposable
     public IReadOnlyList<(int X, int Y, int W, int H)> CardRects =>
         _canvas?.CardRects ?? Array.Empty<(int, int, int, int)>();
 
+    /// <summary>当前键盘焦点所在的卡片序号；-1 表示没有焦点。</summary>
+    public int FocusIndex => _focusIndex;
+    public bool KeyboardFocused => _keyboard;
+
     /// <summary>真实鼠标输入（已换算成卡片索引与条目 Id）。</summary>
     public event Action<RopeMouseEvent>? Mouse;
+
+    /// <summary>键盘输入（Tab 已由窗口内部消化成焦点移动，不会再抛到这里）。</summary>
+    public event Action<RopeKeyEvent>? Key;
 
     /// <summary>掉落层复用同一个已注册窗口类（同一 WndProc、同一显式箭头光标）。</summary>
     internal static void EnsureClass()
@@ -103,14 +118,132 @@ public sealed class RopeWindow : IDisposable
             _canvas = new RopeCanvas(widthPx, heightPx, _scale);
         }
 
+        _canvas.Theme = ThemePalette.Current;
+        _canvas.FocusIndex = _focusIndex;
+        _canvas.HoverIndex = _hoverIndex;
         _canvas.Render(frame);
         if (!_canvas.Present(_hwnd)) return false;
         ShellNative.ShowWindow(_hwnd, ShellNative.SW_SHOWNOACTIVATE);
+        UpdateAccessibleName(frame);
         return true;
+    }
+
+    /// <summary>
+    /// 窗口级无障碍名称：卡片是纯像素绘制，Narrator 能读到的是窗口标题。
+    /// 这里把「几张卡片 / 当前焦点是哪张」写进标题并广播 NAMECHANGE，
+    /// 卡片级 UIA 提供程序仍属后续迭代（见 docs/11 P0-6 的偏差记录）。
+    /// </summary>
+    private void UpdateAccessibleName(RopeFrame frame)
+    {
+        string name = $"ClipLine 晾衣绳 — {frame.Cards.Count} 张卡片";
+        if (_focusIndex >= 0 && _focusIndex < frame.Cards.Count)
+        {
+            string file = Path.GetFileName(frame.Cards[_focusIndex].Path);
+            if (file.Length > 0) name = $"ClipLine — {file}";
+        }
+        ShellNative.SetWindowTextW(_hwnd, name);
+        ShellNative.NotifyWinEvent(ShellNative.EventObjectNameChange, _hwnd, ShellNative.ObjidWindow, 0);
     }
 
     /// <summary>指针是否落在任一卡片区（物理像素坐标）。</summary>
     public bool HitTest(int px, int py) => HitCardIndex(px, py) >= 0;
+
+    /// <summary>指针所在的卡片序号；-1 表示不在任何卡片上。</summary>
+    public int CardIndexAt(int px, int py) => HitCardIndex(px, py);
+
+    /// <summary>悬停高亮：只重绘一帧，卡片变亮/描边，绳子与窗口不动。</summary>
+    public void SetHoverIndex(int index)
+    {
+        if (index == _hoverIndex) return;
+        _hoverIndex = index;
+        if (_canvas is null || _frame is null) return;
+        _canvas.HoverIndex = _hoverIndex;
+        _canvas.Render(_frame);
+        _canvas.Present(_hwnd);
+    }
+
+    /// <summary>
+    /// 用户主动唤出（托盘单击 / 全局热键）时切成可聚焦态，之后 Tab / Enter /
+    /// Shift+F10 才拿得到键盘消息；指针悬停唤出保持 WS_EX_NOACTIVATE 不抢焦点。
+    /// </summary>
+    public void FocusForKeyboard()
+    {
+        if (!Exists) return;
+        long style = ShellNative.GetWindowLongPtrW(_hwnd, ShellNative.GWL_EXSTYLE).ToInt64();
+        long updated = style & ~(long)ShellNative.WS_EX_NOACTIVATE;
+        if (updated != style)
+            ShellNative.SetWindowLongPtrW(_hwnd, ShellNative.GWL_EXSTYLE, new IntPtr(updated));
+        _keyboard = true;
+        int count = _frame?.Cards.Count ?? 0;
+        if (_focusIndex < 0 && count > 0) SetFocusIndex(0);
+        ShellNative.SetForegroundWindow(_hwnd);
+        ShellNative.SetFocus(_hwnd);
+    }
+
+    /// <summary>失焦 / 收起：恢复 NOACTIVATE 并撤掉焦点框，不改变绳子可见性。</summary>
+    public void ReleaseKeyboard()
+    {
+        if (!_keyboard) return;
+        _keyboard = false;
+        if (!Exists) return;
+        long style = ShellNative.GetWindowLongPtrW(_hwnd, ShellNative.GWL_EXSTYLE).ToInt64();
+        ShellNative.SetWindowLongPtrW(_hwnd, ShellNative.GWL_EXSTYLE,
+            new IntPtr(style | ShellNative.WS_EX_NOACTIVATE));
+        SetFocusIndex(-1);
+    }
+
+    /// <summary>移动键盘焦点并只重绘这一帧（卡片级重绘，不动绳与窗口）。</summary>
+    private void SetFocusIndex(int index)
+    {
+        int count = _frame?.Cards.Count ?? 0;
+        int clamped = count == 0 || index < 0 ? -1 : Math.Min(index, count - 1);
+        if (clamped == _focusIndex) return;
+        _focusIndex = clamped;
+        if (_canvas is null || _frame is null) return;
+        _canvas.FocusIndex = _focusIndex;
+        _canvas.Render(_frame);
+        _canvas.Present(_hwnd);
+        UpdateAccessibleName(_frame);
+    }
+
+    private static bool IsDown(byte vk) => (ShellNative.GetKeyState(vk) & 0x8000) != 0;
+
+    /// <summary>键盘唤出卡片菜单（WM_CONTEXTMENU / 菜单键）。</summary>
+    private void RaiseContextMenuKey()
+    {
+        if (_focusIndex < 0 || _frame is null || _focusIndex >= _frame.Cards.Count) return;
+        Key?.Invoke(new RopeKeyEvent(ShellNative.VkApps, _focusIndex,
+            _frame.Cards[_focusIndex].Id, false, false));
+    }
+
+    /// <summary>Tab / 方向键在内部消化成焦点移动，其余键连同焦点卡片一起上报。</summary>
+    private void OnKeyDown(uint vk)
+    {
+        bool shift = IsDown(ShellNative.VkShift);
+        bool ctrl = IsDown(ShellNative.VkControl);
+        int count = _frame?.Cards.Count ?? 0;
+        switch (vk)
+        {
+            case ShellNative.VkTab:
+                if (count > 0)
+                    SetFocusIndex(shift
+                        ? (_focusIndex <= 0 ? count - 1 : _focusIndex - 1)
+                        : (_focusIndex + 1) % count);
+                return;
+            case ShellNative.VkLeft:
+            case ShellNative.VkUp:
+                if (count > 0) SetFocusIndex(Math.Max(0, _focusIndex - 1));
+                return;
+            case ShellNative.VkRight:
+            case ShellNative.VkDown:
+                if (count > 0) SetFocusIndex(Math.Min(count - 1, _focusIndex + 1));
+                return;
+        }
+        Guid id = Guid.Empty;
+        if (_focusIndex >= 0 && _frame is not null && _focusIndex < _frame.Cards.Count)
+            id = _frame.Cards[_focusIndex].Id;
+        Key?.Invoke(new RopeKeyEvent(vk, _focusIndex, id, ctrl, shift));
+    }
 
     private int HitCardIndex(int px, int py)
     {
@@ -168,6 +301,24 @@ public sealed class RopeWindow : IDisposable
                     id = window._frame.Cards[index].Id;
                 var evt = new RopeMouseEvent(kind.Value, x, y, index, id, wheel);
                 Post(() => window.Mouse?.Invoke(evt));
+                return IntPtr.Zero;
+            }
+
+            if (msg == ShellNative.WM_KEYDOWN)
+            {
+                uint vk = (uint)wParam.ToUInt64();
+                Post(() => window.OnKeyDown(vk));
+                return IntPtr.Zero;
+            }
+            if (msg == ShellNative.WM_CONTEXTMENU)
+            {
+                // 菜单键 / Shift+F10 由系统翻译成 WM_CONTEXTMENU，键盘用户走这条路。
+                Post(window.RaiseContextMenuKey);
+                return IntPtr.Zero;
+            }
+            if (msg == ShellNative.WM_KILLFOCUS)
+            {
+                Post(window.ReleaseKeyboard);
                 return IntPtr.Zero;
             }
         }

@@ -31,9 +31,17 @@ internal sealed class RealInputBridge : IDisposable
     private int _selfClipboardWrites;
     private long _selfClipboardUntilMs;
     private Guid _contextItemId;
+    /// <summary>键盘唤出菜单时的锚点（客户区 = 屏幕坐标，绳窗口铺满整屏）；鼠标唤出为 null。</summary>
+    private ShellNative.POINT? _menuAnchor;
     private bool _clipboardAttached;
     private bool _hotKeyRegistered;
     private bool _disposed;
+    private string _shortcut = HotKeyModel.DefaultShortcut;
+    private ShortcutWindow? _shortcutWindow;
+
+    /// <summary>全局热键 id：1=晾衣绳开关，2=退出（菜单里承诺的 Ctrl+Q）。</summary>
+    private const int ToggleHotKeyId = 1;
+    private const int QuitHotKeyId = 2;
 
     private static readonly string DiagPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -63,22 +71,65 @@ internal sealed class RealInputBridge : IDisposable
         if (hwnd == IntPtr.Zero) return;
 
         _clipboardAttached = ShellNative.AddClipboardFormatListener(hwnd);
-        uint modifiers = ShellNative.MOD_CONTROL | ShellNative.MOD_ALT;
-        _hotKeyRegistered = ShellNative.RegisterHotKey(hwnd, 1, modifiers | ShellNative.MOD_NOREPEAT, 'T');
-        if (!_hotKeyRegistered) // 部分输入法/远程桌面会拒绝 NOREPEAT，退回普通注册
-            _hotKeyRegistered = ShellNative.RegisterHotKey(hwnd, 1, modifiers, 'T');
+        // 快捷键的注册/注销只有这一套（唯一所有者）：门面发 RegisterHotKey 时
+        // 也走本类，否则平台层会在自己的隐藏窗口上再注册一次并静默失败。
+        _shortcut = _host.Facade.Current.Shortcut;
+        _hotKeyRegistered = RegisterToggleHotKey(_shortcut);
+        // P1-4：菜单里写着 Ctrl+Q，就必须真的能按。
+        ShellNative.RegisterHotKey(hwnd, QuitHotKeyId, ShellNative.MOD_CONTROL, ShellNative.VkQ);
 
         _host.Tray.MenuRequested += ShowTrayMenu;
         _host.Tray.LeftClicked += ToggleLine;
         _host.Tray.ClipboardUpdated += OnClipboardUpdated;
-        _host.Tray.HotKeyPressed += ToggleLine;
+        _host.Tray.HotKeyPressed += OnGlobalHotKey;
         _host.Tray.SessionEnding += OnSessionEnding;
+        _host.Tray.ThemeChanged += OnSystemThemeChanged;
         _host.Rope.Mouse += OnRopeMouse;
+        _host.Rope.Key += OnRopeKey;
 
         SyncWatchers();
         _host.Tray.SetTooltip("ClipLine — 截个图，它就会挂在这里");
         Diag($"attach: clipboard={_clipboardAttached} hotkey={_hotKeyRegistered} " +
+             $"shortcut=\"{_shortcut}\" " +
              $"syncContext={_context?.GetType().Name ?? "null"} watchers={_watchers.Count}");
+        if (!_hotKeyRegistered)
+        {
+            // P1-6：注册失败必须让用户看见，而不是只写一行诊断日志。
+            _host.Tray.ShowBalloon("快捷键被占用",
+                $"{_shortcut} 已被其他应用占用。请在托盘菜单「快捷键」中更换。");
+        }
+    }
+
+    /// <summary>系统深浅色 / 高对比度切换：重刷色板并让所有自绘窗口立即换色。</summary>
+    private void OnSystemThemeChanged() => _host.ApplyTheme();
+
+    /// <summary>注册晾衣绳开关热键；失败返回 false，由调用方决定如何告知用户。</summary>
+    private bool RegisterToggleHotKey(string shortcut)
+    {
+        IntPtr hwnd = _host.Tray.HostHandle;
+        if (hwnd == IntPtr.Zero) return false;
+        ShellNative.UnregisterHotKey(hwnd, ToggleHotKeyId);
+        _hotKeyRegistered = false;
+        if (string.IsNullOrWhiteSpace(shortcut) ||
+            shortcut.Equals(HotKeyModel.NoneShortcut, StringComparison.Ordinal)) return false;
+        string[] parts = shortcut.Split('+', StringSplitOptions.TrimEntries);
+        string key = parts[^1];
+        if (key.Length != 1) return false;
+        uint modifiers = HotKey.ParseModifiers(shortcut);
+        uint vk = char.ToUpperInvariant(key[0]);
+        // 少数输入法 / 远程桌面会拒绝 NOREPEAT，退回普通注册再判一次。
+        _hotKeyRegistered =
+            ShellNative.RegisterHotKey(hwnd, ToggleHotKeyId, modifiers | ShellNative.MOD_NOREPEAT, vk)
+            || ShellNative.RegisterHotKey(hwnd, ToggleHotKeyId, modifiers, vk);
+        Diag($"hotkey: register \"{shortcut}\" -> {_hotKeyRegistered}");
+        return _hotKeyRegistered;
+    }
+
+    /// <summary>WM_HOTKEY 按 id 分派：Ctrl+Alt+T 开关绳，Ctrl+Q 退出。</summary>
+    private void OnGlobalHotKey(int id)
+    {
+        if (id == QuitHotKeyId) { _host.RequestQuit(); return; }
+        ToggleLine();
     }
 
     // ------------------------------------------------------------------
@@ -309,7 +360,8 @@ internal sealed class RealInputBridge : IDisposable
         try
         {
             int selected = ShellNative.TrackPopupMenuEx(menu,
-                ShellNative.TPM_RETURNCMD | ShellNative.TPM_RIGHTBUTTON | ShellNative.TPM_NONOTIFY,
+                ShellNative.TPM_RETURNCMD | ShellNative.TPM_RIGHTBUTTON | ShellNative.TPM_NONOTIFY
+                | ShellNative.TPM_WORKAREA,
                 cursor.X, cursor.Y, _host.Tray.HostHandle, IntPtr.Zero);
             if (selected > 0)
             {
@@ -344,10 +396,21 @@ internal sealed class RealInputBridge : IDisposable
             bool localized = Label("Show Line") == "显示晾衣绳";
             // Sound 与 Quit 两项带 SeparatorBefore，分隔符也各占一个菜单项。
             int expected = specs.Count + specs.Count(s => s.SeparatorBefore);
+            // P0-6：按 Alt 后能用字母直接跳到菜单项 —— 统计带「(&X)」的项。
+            int withAccessKey = 0;
+            for (uint i = 0; i < count; i++)
+            {
+                var text = new StringBuilder(256);
+                if (ShellNative.GetMenuStringW(menu, i, text, text.Capacity, 0x0400) > 0
+                    && text.ToString().Contains("(&", StringComparison.Ordinal))
+                    withAccessKey++;
+            }
+            bool accessKeys = withAccessKey >= 12;
             bool pass = count == expected
                         && entries.Count > TrayMenuModel.MainItemCount
-                        && localized;
-            return (pass, $"主菜单项={count}/{expected}(含分隔符), 可选命令={entries.Count}, 中文标签={localized}");
+                        && localized && accessKeys;
+            return (pass, $"主菜单项={count}/{expected}(含分隔符), 可选命令={entries.Count}, " +
+                          $"中文标签={localized}, 访问键={withAccessKey}");
         }
         finally { ShellNative.DestroyMenu(menu); }
     }
@@ -363,6 +426,8 @@ internal sealed class RealInputBridge : IDisposable
                 ShellNative.AppendMenuW(menu, ShellNative.MF_SEPARATOR, IntPtr.Zero, null);
 
             string label = Label(spec.Key);
+            // 动态文件夹列表不占访问键；其余按稳定 order 分配，同层不重复。
+            label = LabelWithAccessKey(label, TrayAccessKey(spec.Order));
             if (spec.Action == TrayMenuAction.ToggleLine && !string.IsNullOrEmpty(shortcut))
                 label += "\t" + shortcut;
 
@@ -424,6 +489,58 @@ internal sealed class RealInputBridge : IDisposable
         return ExtraChinese.TryGetValue(bare, out string? extra) ? extra : bare;
     }
 
+    /// <summary>
+    /// P0-6 / P1-8：菜单项补键盘访问键。中文标签后追加「(&amp;X)」，
+    /// 按 Alt 后按字母即可跳到该项，不必抓着鼠标。同一级菜单内保证不重复。
+    /// </summary>
+    private static string LabelWithAccessKey(string label, char? key) =>
+        key is { } ch ? $"{label}(&{ch})" : label;
+
+    /// <summary>托盘菜单的访问键按稳定 order 分配（动作枚举有复用，不能按动作取）。</summary>
+    private static char? TrayAccessKey(int order) => order switch
+    {
+        1 => 'S',   // Show / Hide Line
+        2 => 'T',   // Take Down All
+        3 => 'P',   // Put Back
+        4 => 'H',   // Hang Everything Back
+        5 => 'K',   // Take Over Screenshots
+        6 => 'C',   // Hang Copied Images
+        7 => 'L',   // Lower the Line
+        8 => 'F',   // Watch Folders
+        9 => 'O',   // Keep on Line
+        10 => 'Z',  // Size
+        11 => 'U',  // Shortcut
+        12 => 'D',  // Open Screenshots Folder
+        13 => 'N',  // Sound
+        14 => 'A',  // Launch at Login
+        15 => 'V',  // Check for Updates
+        16 => 'Q',  // Quit
+        71 => 'P', 72 => 'N', 73 => 'F',
+        89 => 'A', 90 => 'S',
+        91 => 'A', 92 => '2', 93 => '5', 94 => '1',
+        101 => 'S', 102 => 'M', 103 => 'L',
+        _ => null, // 动态的已监视文件夹列表不占访问键
+    };
+
+    private static char? CardAccessKey(ContextAction action) => action switch
+    {
+        ContextAction.Copy => 'C',
+        ContextAction.Open => 'O',
+        ContextAction.QuickLook => 'Q',
+        ContextAction.Hold => 'H',
+        ContextAction.Markup => 'M',
+        ContextAction.RevealInExplorer => 'E',
+        ContextAction.Pin => 'P',
+        ContextAction.Unpin => 'U',
+        ContextAction.StoreToDesktop => 'D',
+        ContextAction.TakeDown => 'T',
+        ContextAction.TakeDownLeft => 'L',
+        ContextAction.TakeDownRight => 'R',
+        ContextAction.Discard => 'S',
+        ContextAction.MoveToRecycleBin => 'B',
+        _ => null,
+    };
+
     // ------------------------------------------------------------------
     // 卡片真实鼠标交互
     // ------------------------------------------------------------------
@@ -457,12 +574,95 @@ internal sealed class RealInputBridge : IDisposable
         _host.RenderFrame();
     }
 
+    /// <summary>
+    /// 键盘操作（P0-6）：Tab 与方向键已在窗口内部换成焦点移动，这里只处理动作键。
+    /// 全部走既有输入（KeyBorrow / TrayMenuItemInvoked / ContextMenuRequested），
+    /// 不新增门面输入，唯一测试接缝保持不变。
+    /// </summary>
+    private void OnRopeKey(RopeKeyEvent e)
+    {
+        bool hasCard = e.ItemId != Guid.Empty;
+        switch (e.VirtualKey)
+        {
+            case ShellNative.VkEscape:
+                _host.Facade.Handle(new ToggleLine()); // 收起晾衣绳，交还焦点
+                break;
+            case ShellNative.VkEnter when hasCard:
+            case ShellNative.VkC when e.Ctrl && hasCard:
+                _host.Facade.Handle(new KeyBorrow(CardKey.Copy, e.ItemId));
+                break;
+            case ShellNative.VkSpace when hasCard:
+                _host.Facade.Handle(new KeyBorrow(CardKey.Space, e.ItemId));
+                break;
+            case ShellNative.VkDelete when hasCard:
+                _host.Facade.Handle(new KeyBorrow(CardKey.Delete, e.ItemId));
+                break;
+            case ShellNative.VkZ when e.Ctrl:
+                // 菜单里写的 Ctrl+Z 现在真的可用（绳子展开期间）。
+                _host.Facade.Handle(new TrayMenuItemInvoked(TrayMenuAction.PutBack, null));
+                break;
+            case ShellNative.VkF10 when e.Shift && hasCard:
+            case ShellNative.VkApps when hasCard:
+                _contextItemId = e.ItemId;
+                // 键盘唤出的菜单要贴着焦点卡片弹，而不是跟着鼠标跑。
+                var rects = _host.Rope.CardRects;
+                if (e.CardIndex >= 0 && e.CardIndex < rects.Count)
+                {
+                    var card = rects[e.CardIndex];
+                    _menuAnchor = new ShellNative.POINT
+                    {
+                        X = card.X + card.W / 2,
+                        Y = card.Y + card.H - 8,
+                    };
+                }
+                _host.Facade.Handle(new ContextMenuRequested(e.ItemId));
+                break;
+            case ShellNative.VkQ when e.Ctrl:
+                _host.RequestQuit();
+                return;
+        }
+        _host.AdvanceFrame();
+        _host.RenderFrame();
+    }
+
+    /// <summary>系统主题变化：录制器也要跟着换色（它不由 ShellAppHost 直接持有）。</summary>
+    internal void ApplyTheme() => _shortcutWindow?.ApplyTheme();
+
     /// <summary>门面发出的交互命令 → Win32 菜单 / 系统默认应用 / 剪贴板 / 气泡。</summary>
     internal void HandleCommand(AppCommand command)
     {
         string argument = command.Argument ?? string.Empty;
         switch (command.Kind)
         {
+            case CommandKind.RegisterHotKey:
+                // 门面保存的是「用户想要的值」，能不能真注册上只有这一层知道；
+                // 失败必须回灌 HotKeyConflict，让设置回滚并给出可见提示（P1-6）。
+                if (string.IsNullOrEmpty(argument)) break;
+                if (RegisterToggleHotKey(argument))
+                {
+                    _shortcut = argument;
+                    break;
+                }
+                _host.Tray.ShowBalloon("快捷键被占用",
+                    $"{argument} 已被其他应用占用，已恢复上一个快捷键。");
+                _host.Facade.Handle(new HotKeyConflict(argument));
+                _host.AdvanceFrame();
+                _host.RenderFrame();
+                break;
+            case CommandKind.UnregisterHotKey:
+                ShellNative.UnregisterHotKey(_host.Tray.HostHandle, ToggleHotKeyId);
+                _hotKeyRegistered = false;
+                break;
+            case CommandKind.RollbackShortcut:
+                if (!string.IsNullOrEmpty(argument) && RegisterToggleHotKey(argument))
+                    _shortcut = argument;
+                break;
+
+            case CommandKind.ShowShortcutRecorder:
+                _shortcutWindow ??= new ShortcutWindow(_host.Scale, _host.Facade);
+                _shortcutWindow.Show();
+                Diag("shortcut recorder: opened");
+                break;
             // 方案 D：更新是同一条「门面发命令 → 输入桥落到真实副作用」链路。
             case CommandKind.ShowUpdateNotice:
                 _host.Tray.ShowBalloon("ClipLine 更新", argument);
@@ -475,6 +675,12 @@ internal sealed class RealInputBridge : IDisposable
                 break;
             case CommandKind.InstallUpdate:
                 _host.Updates.Install(argument);
+                break;
+            case CommandKind.CancelUpdateDownload:
+                _host.Updates.CancelDownload();
+                break;
+            case CommandKind.HideUpdatePanel:
+                _host.UpdatePanel?.Hide();
                 break;
 
             case CommandKind.ShowWelcome:
@@ -551,10 +757,6 @@ internal sealed class RealInputBridge : IDisposable
                     _host.Facade.Handle(new TrayMenuItemInvoked(TrayMenuAction.AddFolder, folder));
                     _host.AdvanceFrame();
                 }
-                break;
-
-            case CommandKind.ShowShortcutRecorder:
-                _host.Tray.ShowBalloon("ClipLine 快捷键", "v1 固定为 Ctrl+Alt+T；自定义录制器将在后续版本提供。");
                 break;
 
             case CommandKind.ShowCopiedBadge:
@@ -679,16 +881,19 @@ internal sealed class RealInputBridge : IDisposable
             uint flags = ShellNative.MF_STRING;
             if (!enabled) flags |= ShellNative.MF_GRAYED | ShellNative.MF_DISABLED;
             actions[id] = action;
-            ShellNative.AppendMenuW(menu, flags, new IntPtr(id), label);
+            ShellNative.AppendMenuW(menu, flags, new IntPtr(id), LabelWithAccessKey(label, CardAccessKey(action)));
             id++;
         }
 
         ShellNative.GetCursorPos(out ShellNative.POINT cursor);
+        if (_menuAnchor is { } anchor) cursor = anchor;
+        _menuAnchor = null;
         ShellNative.SetForegroundWindow(_host.Tray.HostHandle);
         try
         {
             int selected = ShellNative.TrackPopupMenuEx(menu,
-                ShellNative.TPM_RETURNCMD | ShellNative.TPM_RIGHTBUTTON | ShellNative.TPM_NONOTIFY,
+                ShellNative.TPM_RETURNCMD | ShellNative.TPM_RIGHTBUTTON | ShellNative.TPM_NONOTIFY
+                | ShellNative.TPM_WORKAREA,
                 cursor.X, cursor.Y, _host.Tray.HostHandle, IntPtr.Zero);
             if (selected > 0 && actions.TryGetValue(selected, out ContextAction action))
             {
@@ -714,6 +919,10 @@ internal sealed class RealInputBridge : IDisposable
         _host.AdvanceFrame();
         _host.EnsurePresented();
         _host.RenderFrame();
+        // 托盘单击 / 全局热键是「用户主动唤出」：这时给绳子键盘焦点（P0-6），
+        // 之后 Tab / Enter / Shift+F10 才可用；悬停唤出仍然不抢焦点。
+        if (_host.Facade.Current.IsRevealed) _host.Rope.FocusForKeyboard();
+        else _host.Rope.ReleaseKeyboard();
     }
 
     private void OnSessionEnding()
@@ -734,63 +943,27 @@ internal sealed class RealInputBridge : IDisposable
         _disposed = true;
         IntPtr hwnd = _host.Tray.HostHandle;
         if (_clipboardAttached && hwnd != IntPtr.Zero) ShellNative.RemoveClipboardFormatListener(hwnd);
-        if (_hotKeyRegistered && hwnd != IntPtr.Zero) ShellNative.UnregisterHotKey(hwnd, 1);
+        if (hwnd != IntPtr.Zero)
+        {
+            if (_hotKeyRegistered) ShellNative.UnregisterHotKey(hwnd, ToggleHotKeyId);
+            ShellNative.UnregisterHotKey(hwnd, QuitHotKeyId);
+        }
 
         _host.Tray.MenuRequested -= ShowTrayMenu;
         _host.Tray.LeftClicked -= ToggleLine;
         _host.Tray.ClipboardUpdated -= OnClipboardUpdated;
-        _host.Tray.HotKeyPressed -= ToggleLine;
+        _host.Tray.HotKeyPressed -= OnGlobalHotKey;
         _host.Tray.SessionEnding -= OnSessionEnding;
+        _host.Tray.ThemeChanged -= OnSystemThemeChanged;
         _host.Rope.Mouse -= OnRopeMouse;
+        _host.Rope.Key -= OnRopeKey;
+        _shortcutWindow?.Dispose();
+        _shortcutWindow = null;
         foreach (FolderWatcher watcher in _watchers.Values) watcher.Dispose();
         _watchers.Clear();
     }
 
-    // ---- 文件夹选择：SHBrowseForFolderW，零 NuGet、零 COM 注册 ----
+    // ---- 文件夹选择：现代 IFileOpenDialog + FOS_PICKFOLDERS（P1-12） ----
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct BROWSEINFOW
-    {
-        public IntPtr HwndOwner;
-        public IntPtr PidlRoot;
-        public IntPtr PszDisplayName;
-        [MarshalAs(UnmanagedType.LPWStr)] public string LpszTitle;
-        public uint UlFlags;
-        public IntPtr Lpfn;
-        public IntPtr LParam;
-        public int Image;
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SHBrowseForFolderW(ref BROWSEINFOW lpbi);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SHGetPathFromIDListW(IntPtr pidl, StringBuilder pszPath);
-
-    private static string? PickFolder()
-    {
-        IntPtr display = Marshal.AllocHGlobal(260 * 2);
-        try
-        {
-            var info = new BROWSEINFOW
-            {
-                HwndOwner = IntPtr.Zero,
-                PidlRoot = IntPtr.Zero,
-                PszDisplayName = display,
-                LpszTitle = "选择要同时监视的文件夹",
-                UlFlags = 0x0001, // BIF_RETURNONLYFSDIRS
-            };
-            IntPtr pidl = SHBrowseForFolderW(ref info);
-            if (pidl == IntPtr.Zero) return null;
-            try
-            {
-                var buffer = new StringBuilder(260);
-                return SHGetPathFromIDListW(pidl, buffer) ? buffer.ToString() : null;
-            }
-            finally { Marshal.FreeCoTaskMem(pidl); }
-        }
-        catch (Exception) { return null; }
-        finally { Marshal.FreeHGlobal(display); }
-    }
+    private static string? PickFolder() => FolderPicker.Pick("选择要同时监视的文件夹");
 }

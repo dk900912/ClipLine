@@ -21,7 +21,7 @@ internal sealed class NoticeWindow : IDisposable
     public const double SizeScale = 0.8;
 
     private const long FadeInMs = 180;
-    private const long HoldUntilMs = 3200;
+    private const long HoldUntilMs = 6000;
     private const long FadeOutMs = 250;
     private const long EndMs = HoldUntilMs + FadeOutMs;
 
@@ -31,6 +31,8 @@ internal sealed class NoticeWindow : IDisposable
     private readonly double _scale;
     private IntPtr _hwnd;
     private RopeCanvas? _canvas;
+    private string _title = string.Empty;
+    private string _text = string.Empty;
     private long _startMs;
     private byte _lastAlpha;
     private int _posX, _posY;
@@ -46,6 +48,9 @@ internal sealed class NoticeWindow : IDisposable
     public int WidthPx => _canvas?.WidthPx ?? 0;
     public int HeightPx => _canvas?.HeightPx ?? 0;
     public double Scale => _scale;
+
+    /// <summary>用户点击通知卡或它的关闭按钮：由托盘宿主停止计时并出队下一条。</summary>
+    public event Action? Dismissed;
 
     private int Px(double dip) => (int)Math.Round(dip * _scale);
 
@@ -72,11 +77,19 @@ internal sealed class NoticeWindow : IDisposable
     {
         if (msg == ShellNative.WM_SETCURSOR)
         {
-            ShellNative.SetCursor(ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcArrow));
+            ShellNative.SetCursor(ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcHand));
             return new IntPtr(1);
+        }
+        if (msg == ShellNative.WM_LBUTTONUP && s_current is not null)
+        {
+            // 通知卡不再穿透：点关闭按钮或卡片任意位置都收起，并出队下一条。
+            s_current.Dismissed?.Invoke();
+            return IntPtr.Zero;
         }
         return ShellNative.DefWindowProcW(hWnd, msg, wParam, lParam);
     }
+
+    private static NoticeWindow? s_current;
 
     /// <summary>显示一条通知。nowMs 由调用方注入，冒烟可用假时钟确定性推进淡入淡出。</summary>
     public bool Show(string title, string text, long nowMs)
@@ -87,9 +100,12 @@ internal sealed class NoticeWindow : IDisposable
         Position(w, h);
 
         _canvas!.RenderNotice(title, text);
+        _title = title;
+        _text = text;
         _startMs = nowMs;
         _lastAlpha = 0;
         _active = true;
+        s_current = this;
         ShellNative.ShowWindow(_hwnd, ShellNative.SW_SHOWNOACTIVATE);
         Tick(nowMs);
         return true;
@@ -124,7 +140,7 @@ internal sealed class NoticeWindow : IDisposable
     {
         if (!Exists)
         {
-            uint exStyle = ShellNative.WS_EX_LAYERED | ShellNative.WS_EX_TRANSPARENT
+            uint exStyle = ShellNative.WS_EX_LAYERED
                 | ShellNative.WS_EX_NOACTIVATE | ShellNative.WS_EX_TOOLWINDOW;
             _hwnd = ShellNative.CreateWindowExW(exStyle, ClassName, "ClipLine notice",
                 ShellNative.WS_POPUP, 0, 0, w, h, IntPtr.Zero, IntPtr.Zero,
@@ -162,6 +178,16 @@ internal sealed class NoticeWindow : IDisposable
     /// <summary>导出当前通知帧，作为确定性的外观证据。</summary>
     public bool DumpFrame(string path) => _canvas?.SavePng(path) ?? false;
 
+    /// <summary>系统主题变化：同一条通知按新色板重绘。</summary>
+    public void ApplyTheme()
+    {
+        if (_canvas is null) return;
+        _canvas.Theme = ThemePalette.Current;
+        if (!_active) return;
+        _canvas.RenderNotice(_title, _text);
+        _canvas.Present(_hwnd, _lastAlpha, _posX, _posY);
+    }
+
     public void Hide()
     {
         if (Exists) ShellNative.ShowWindow(_hwnd, ShellNative.SW_HIDE);
@@ -172,6 +198,7 @@ internal sealed class NoticeWindow : IDisposable
         if (_disposed) return;
         _disposed = true;
         _active = false;
+        if (ReferenceEquals(s_current, this)) s_current = null;
         Hide();
         if (_hwnd != IntPtr.Zero)
         {

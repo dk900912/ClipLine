@@ -29,7 +29,11 @@ public sealed class ShellAppHost : IDisposable
     private readonly ToolHost _tools;
     private readonly System.Threading.SynchronizationContext? _sync;
     private UpdateService? _updates;
+    private UpdateWindow? _updateWindow;
+    private UpdatePhase _lastUpdatePhase = UpdatePhase.Idle;
+    private bool _updateDismissed;
     private bool _restartRequested;
+    private int _hoverCard = -1;
     private readonly List<FallEntry> _falls = new();
     // 卡片下线前的最后一次屏幕布局，供错峰 60 ms 的批量 StartFall 找到各自起点。
     private readonly Dictionary<string, (int X, int Y, int W, int H, double Tilt, bool Kept, long AtMs)> _cardLayouts = new();
@@ -54,6 +58,8 @@ public sealed class ShellAppHost : IDisposable
         _tools = new ToolHost(this);
         Directory.CreateDirectory(_env.OwnDirectory);
         Directory.CreateDirectory(_env.ScreenshotsFolder);
+        // 系统绘制部分（右键菜单等）也要跟随深浅色，启动时先对齐一次。
+        ThemeHook.Apply();
 
         Rope = new RopeWindow(_scale);
         Tray = new ShellTray();
@@ -160,6 +166,7 @@ public sealed class ShellAppHost : IDisposable
         AdvanceMotion();
         RenderFalls();
         StateSnapshot state = Facade.Current;
+        SyncUpdatePanel(state);
         // 安装器已由一次性 helper 接管：主进程必须退出，helper 才能替换文件 / 注册新包并重启。
         if (!_restartRequested && state.Update.Phase == UpdatePhase.Installing)
         {
@@ -188,6 +195,59 @@ public sealed class ShellAppHost : IDisposable
         _hasRendered = true;
         Rope.Present(frame);
         RememberLayouts(frame);
+    }
+
+    /// <summary>
+    /// 更新面板：手动检查立即出现（P1-7），后台下载不打扰，下载完成必须等确认（P0-3）。
+    /// 自动检查的下载过程不弹窗；Ready 时才出现，因为这时需要用户决策。
+    /// </summary>
+    private void SyncUpdatePanel(StateSnapshot state)
+    {
+        UpdateSnapshot u = state.Update;
+        if (u.Phase == UpdatePhase.Checking && _lastUpdatePhase != UpdatePhase.Checking)
+            _updateDismissed = false; // 新的一次手动检查重新给用户反馈
+        _lastUpdatePhase = u.Phase;
+
+        bool relevant = u.Phase is UpdatePhase.Checking or UpdatePhase.Available
+            or UpdatePhase.Downloading or UpdatePhase.Verifying or UpdatePhase.Ready
+            or UpdatePhase.Failed or UpdatePhase.UpToDate or UpdatePhase.Offline;
+        bool wantsAttention = u.Manual || u.Phase == UpdatePhase.Ready;
+        bool want = relevant && wantsAttention && !u.Deferred && !_updateDismissed;
+
+        if (!want)
+        {
+            _updateWindow?.Hide();
+            return;
+        }
+        if (_updateWindow is null)
+        {
+            _updateWindow = new UpdateWindow(_scale, Facade);
+            _updateWindow.UserDismissed += () => _updateDismissed = true;
+        }
+        if (!_updateWindow.IsVisible) _updateWindow.Show(u);
+        else _updateWindow.Update(u);
+    }
+
+    internal UpdateWindow? UpdatePanel => _updateWindow;
+
+    /// <summary>系统主题变化：刷新色板并让所有自绘窗口立即换色。</summary>
+    public void ApplyTheme()
+    {
+        // 先刷系统菜单/滚动条的深浅，再判断色板是否变化：
+        // 高对比度换配色方案时色板可能看上去没变，但菜单必须重刷。
+        ThemeHook.Apply();
+        if (!ThemePalette.Refresh()) return;
+        _lastSignature = string.Empty; // 强制下一帧重绘绳
+        _tools.ApplyTheme();
+        _updateWindow?.ApplyTheme();
+        _bridge?.ApplyTheme();
+        Tray.Notice?.ApplyTheme();
+        if (Rope.IsVisible)
+        {
+            RopeFrame frame = CurrentView();
+            _lastSignature = frame.Signature;
+            Rope.Present(frame);
+        }
     }
 
     /// <summary>
@@ -297,7 +357,14 @@ public sealed class ShellAppHost : IDisposable
     public void UpdateHitTest(int pointerXpx, int pointerYpx)
     {
         if (!Rope.IsVisible) return;
-        Rope.SetPassthrough(!(_cardsHitEnabled && Rope.HitTest(pointerXpx, pointerYpx)));
+        int index = Rope.CardIndexAt(pointerXpx, pointerYpx);
+        // P1 补充：悬停高亮与命中切换同源，避免两套判定给出不一致的结果。
+        if (index != _hoverCard)
+        {
+            _hoverCard = index;
+            Rope.SetHoverIndex(index);
+        }
+        Rope.SetPassthrough(!(_cardsHitEnabled && index >= 0));
     }
 
     internal RopeFrame CurrentView()
@@ -349,10 +416,12 @@ public sealed class ShellAppHost : IDisposable
                 {
                     Rope.SetPassthrough(true);
                     Rope.Hide();
+                    _hoverCard = -1;
                 }
                 break;
             case CommandKind.DestroyWindow:
                 _cardsHitEnabled = false;
+                _hoverCard = -1;
                 Rope.DestroyNow();
                 break;
             case CommandKind.SetTrayIcon:
@@ -407,6 +476,7 @@ public sealed class ShellAppHost : IDisposable
         Rope.Dispose();
         _fallWindow.Dispose();
         _tools.Dispose();
+        _updateWindow?.Dispose();
         Tray.Dispose();
         _sink.Dispose();
     }
@@ -476,7 +546,12 @@ internal sealed class ShellCommandSink : ICommandSink
         CommandKind.RunUpdateCheck,
         CommandKind.DownloadUpdate,
         CommandKind.InstallUpdate,
+        CommandKind.CancelUpdateDownload,
         CommandKind.ShowUpdateNotice,
+        CommandKind.HideUpdatePanel,
+        CommandKind.RegisterHotKey,
+        CommandKind.UnregisterHotKey,
+        CommandKind.RollbackShortcut,
     };
 
     public static bool IsHandled(CommandKind kind) => ShellRouted.Contains(kind);
@@ -523,7 +598,12 @@ internal sealed class ShellCommandSink : ICommandSink
             case CommandKind.RunUpdateCheck:
             case CommandKind.DownloadUpdate:
             case CommandKind.InstallUpdate:
+            case CommandKind.CancelUpdateDownload:
             case CommandKind.ShowUpdateNotice:
+            case CommandKind.HideUpdatePanel:
+            case CommandKind.RegisterHotKey:
+            case CommandKind.UnregisterHotKey:
+            case CommandKind.RollbackShortcut:
                 _host.OnShellCommand(command);
                 break;
             default:

@@ -137,6 +137,7 @@ public sealed class UpdateService
     private readonly UpdateConfig _config;
     private readonly bool _msixChannel;
     private readonly string _updatesDir;
+    private CancellationTokenSource? _downloadCts;
 
     public UpdateService(Action<AppInput> dispatch, bool msixChannel, IUpdateTransport? transport = null)
     {
@@ -212,8 +213,16 @@ public sealed class UpdateService
         if (fileName.Length == 0) fileName = Channel + ".pkg";
         string local = Path.Combine(folder, fileName);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        _downloadCts = cts;
         var progress = new Progress<int>(p => Post(new UpdateProgress(p)));
-        await _transport.DownloadFileAsync(assetUrl, local, progress, cts.Token);
+        try
+        {
+            await _transport.DownloadFileAsync(assetUrl, local, progress, cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_downloadCts, cts)) _downloadCts = null;
+        }
 
         if (shaUrl.Length > 0)
         {
@@ -230,6 +239,13 @@ public sealed class UpdateService
         Post(new UpdateProgress(100));
         Post(new UpdateDownloadCompleted(local, null));
     }, "download");
+
+    /// <summary>取消正在进行的下载（安装阶段不可取消，必须等确认）。</summary>
+    public void CancelDownload()
+    {
+        try { _downloadCts?.Cancel(); } catch { /* 已结束 */ }
+        _downloadCts = null;
+    }
 
     /// <summary>按安装形态执行：MSIX 走 Add-AppxPackage，便携版走 updater helper。</summary>
     public void Install(string localPackage) => Fire(() =>

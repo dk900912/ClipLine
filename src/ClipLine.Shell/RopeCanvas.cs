@@ -27,6 +27,8 @@ internal sealed unsafe class RopeCanvas : IDisposable
     private readonly List<(int X, int Y, int W, int H)> _cardRects = new();
     private readonly ThumbnailCache _thumbs = new();
 
+    private const int TitleHeightDip = 44;
+
     // 卡片离屏合成：_cardBuf 与主画布同为「预乘 BGRA + A<<24」，可直接线性插值。
     // 缓冲矩形用全局坐标 _cardOriginX/Y 定位，DrawCard 里的 Put 自动转成局部索引。
     private uint[] _cardBuf = Array.Empty<uint>();
@@ -44,6 +46,12 @@ internal sealed unsafe class RopeCanvas : IDisposable
     internal int WidthPx => _widthPx;
     internal int HeightPx => _heightPx;
     internal IReadOnlyList<(int X, int Y, int W, int H)> CardRects => _cardRects;
+
+    /// <summary>键盘焦点卡片序号；-1 表示无焦点。绘制 2 DIP 品牌色焦点框。</summary>
+    internal int FocusIndex { get; set; } = -1;
+
+    /// <summary>指针悬停卡片序号；-1 表示没有悬停。绘制 1.5 DIP 弱描边。</summary>
+    internal int HoverIndex { get; set; } = -1;
 
     internal RopeCanvas(int widthPx, int heightPx, double scale)
     {
@@ -147,7 +155,7 @@ internal sealed unsafe class RopeCanvas : IDisposable
             int drawY = y + Px(card?.DropDip ?? 0);
             BeginCard(x, drawY, cardW, cardH, swing);
             DrawCard(x, drawY, cardW, cardH, card?.Kept ?? i < frame.KeptCount, card?.Path,
-                card?.Copied ?? false);
+                card?.Copied ?? false, focused: i == FocusIndex, hovered: i == HoverIndex);
             EndCard();
         }
         _inCard = false;
@@ -329,7 +337,8 @@ internal sealed unsafe class RopeCanvas : IDisposable
         (uint)lx < (uint)_cardW && (uint)ly < (uint)_cardH
             ? _cardBuf[ly * _cardW + lx] : 0;
 
-    private void DrawCard(int x, int y, int w, int h, bool kept, string? path, bool copied)
+    private void DrawCard(int x, int y, int w, int h, bool kept, string? path, bool copied,
+        bool focused = false, bool hovered = false)
     {
         int radius = Px(16);
         FillRoundRect(x + 2, y + 5, w, h, radius, 0, 0, 0, 46);
@@ -345,14 +354,15 @@ internal sealed unsafe class RopeCanvas : IDisposable
 
         int px = x + Px(4), py = y + Px(4), pw = w - Px(8), ph = h - Px(8);
         int innerRadius = Px(12);
+        // P2-11：非 3:2 图片的 contain 留白改成中性相框色（浅色 #F3F4F8 / 深色 #2B2B2B），
+        // 原来的饱和蓝渐变会让竖图、方图四周出现一圈明显蓝边。
+        int matte = Theme.Surface;
         for (int yy = py; yy < py + ph; yy++)
         {
-            double t = (yy - py) / (double)Math.Max(ph, 1);
-            int r = (int)(120 + 110 * t), g = (int)(150 + 95 * t), b = (int)(225 + 30 * t);
             for (int xx = px; xx < px + pw; xx++)
             {
                 double cov = RoundCoverage(xx + 0.5, yy + 0.5, px, py, pw, ph, innerRadius);
-                if (cov > 0) PutCoverage(xx, yy, r, g, b, 255, cov);
+                if (cov > 0) PutRgb(xx, yy, matte, 255, cov);
             }
         }
 
@@ -383,24 +393,80 @@ internal sealed unsafe class RopeCanvas : IDisposable
         }
 
         // 夹子：固定照片用深空灰，其余银色（docs/05 §组件规格）
+        // P2-9：改成圆角 3.5 DIP 的金属渐变 + 顶部卡槽 + 下沿投影 + 左侧高光，
+        // 旧的直角矩形放大后就是一块纯色方块。
         int clipW = Px(9), clipH = Px(26);
         int clipX = x + w / 2 - clipW / 2, clipY = y - Px(18);
+        int clipR = Math.Max(2, Px(3.5));
+        int shadowRows = Math.Max(1, Px(3));
+        for (int i = 0; i < shadowRows; i++)
+        {
+            int alpha = (int)(44 * (1 - i / (double)shadowRows));
+            for (int xx = clipX - Px(1); xx < clipX + clipW + Px(1); xx++)
+                PutRgb(xx, clipY + clipH - Px(1) + i, 0x0B0F16, alpha);
+        }
         for (int yy = clipY; yy < clipY + clipH; yy++)
         {
             double t = (yy - clipY) / (double)Math.Max(clipH - 1, 1);
-            int c = kept ? (int)(90 - 30 * t) : (int)(210 - 70 * t);
+            int grey = kept ? (int)(98 - 36 * t) : (int)(224 - 70 * t);
+            int rgb = (grey << 16) | (grey << 8) | Math.Clamp(grey + 8, 0, 255);
             for (int xx = clipX; xx < clipX + clipW; xx++)
             {
-                int edge = (xx == clipX || xx == clipX + clipW - 1) ? -40 : 0;
-                Put(xx, yy,
-                    Math.Clamp(c + edge, 0, 255),
-                    Math.Clamp(c + edge, 0, 255),
-                    Math.Clamp(c + edge + 6, 0, 255), 255);
+                double cov = RoundCoverage(xx + 0.5, yy + 0.5, clipX, clipY, clipW, clipH, clipR);
+                if (cov > 0) PutRgb(xx, yy, rgb, 255, cov);
             }
         }
+        // 左侧金属高光
+        int glossX = clipX + Math.Max(1, Px(1.6));
+        for (int yy = clipY + Px(4); yy < clipY + clipH - Px(5); yy++)
+            PutRgb(glossX, yy, kept ? 0x9AA0AA : 0xF4F6F9, 150);
+        // 顶部卡槽（金属夹的咬合缝）
+        int slotW = Px(5), slotH = Math.Max(1, Px(1.4));
+        int slotX = clipX + (clipW - slotW) / 2, slotY = clipY + Px(4);
+        for (int yy = slotY; yy < slotY + slotH; yy++)
+            for (int xx = slotX; xx < slotX + slotW; xx++)
+                PutRgb(xx, yy, kept ? 0x2A2E35 : 0x8C929B, 190);
 
         // G-01 / V-17：单击复制后 1.2 秒内在卡片上显示「已复制」。
         if (copied) DrawCopiedBadge(x, y, w, h);
+
+        // P0-6：键盘焦点框 —— 2 DIP 品牌色内描边 + 外侧 40% 透明度扩边，
+        // 保证在任意背景（深色 / 高对比度 / 照片本身是靛蓝）上都看得见。
+        // P1 补充：悬停给一圈 1.5 DIP 的品牌色描边（比焦点框弱），
+        // 让「这张卡可以点」在鼠标移上去的瞬间就能看出来。
+        if (hovered && !focused)
+            DrawCardRing(x, y, w, h, radius, 0, Math.Max(1, Px(1.5)), 0,
+                Theme.AccentHover, 120, 0);
+        // P0-6：键盘焦点框 —— 2 DIP 品牌色内描边 + 外侧柔光。
+        if (focused)
+            DrawCardRing(x, y, w, h, radius, Px(1), Math.Max(2, Px(2)), Px(3),
+                Theme.Accent, 255, 90);
+    }
+
+    /// <summary>
+    /// 卡片描边环：外环 - 内环的覆盖率差 = 环带。halo &gt; 0 时外扩部分用低透明度
+    /// 做柔光，保证在照片本身也是靛蓝时依然可辨。
+    /// </summary>
+    private void DrawCardRing(int x, int y, int w, int h, int radius, int inset, int ring,
+        int halo, int rgb, int coreAlpha, int haloAlpha)
+    {
+        int outerR = Math.Max(2, radius - inset);
+        for (int yy = y - halo; yy < y + h + halo; yy++)
+            for (int xx = x - halo; xx < x + w + halo; xx++)
+            {
+                double outer = RoundCoverage(xx + 0.5, yy + 0.5,
+                    x + inset - halo, y + inset - halo,
+                    w - (inset - halo) * 2, h - (inset - halo) * 2, outerR + halo);
+                double inner = RoundCoverage(xx + 0.5, yy + 0.5,
+                    x + inset + ring, y + inset + ring,
+                    w - (inset + ring) * 2, h - (inset + ring) * 2,
+                    Math.Max(2, outerR - ring));
+                double cov = Math.Max(0, outer - inner);
+                if (cov <= 0) continue;
+                bool onRing = xx >= x + inset && xx < x + w - inset
+                    && yy >= y + inset && yy < y + h - inset;
+                PutRgb(xx, yy, rgb, onRing ? coreAlpha : haloAlpha, cov);
+            }
     }
 
     /// <summary>品牌靛蓝圆角底 + 白色中文「已复制」，直接合成到卡片离屏缓冲。</summary>
@@ -459,9 +525,9 @@ internal sealed unsafe class RopeCanvas : IDisposable
             oldBmp = ShellNative.SelectObject(dc, dib);
             new Span<uint>((void*)bits, bw * bh).Clear();
 
-            // DEFAULT_CHARSET / ANTIALIASED_QUALITY / FW_BOLD / Microsoft YaHei
+            // DEFAULT_CHARSET / ANTIALIASED_QUALITY / FW_BOLD / 中文字面
             font = ShellNative.CreateFontW(-fontH, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 4, 0,
-                "Microsoft YaHei");
+                FaceFor("已复制"));
             if (font == IntPtr.Zero) return;
             oldFont = ShellNative.SelectObject(dc, font);
             ShellNative.SetBkMode(dc, 1); // TRANSPARENT
@@ -642,6 +708,8 @@ internal sealed unsafe class RopeCanvas : IDisposable
     // ShellExecuteW("open") 的占位行为。见 docs/05 §7、docs/11。
     // ------------------------------------------------------------------
 
+    internal ThemePalette Theme { get; set; } = ThemePalette.Light;
+
     internal void RenderTool(ToolFrame frame, ToolLayout layout)
     {
         new Span<uint>(_bits, _widthPx * _heightPx).Clear();
@@ -650,6 +718,7 @@ internal sealed unsafe class RopeCanvas : IDisposable
         _alphaScale = 1;
         layout.Reset();
 
+        ThemePalette t = Theme;
         int pad = Px(8);
         int bx = pad, by = pad;
         int bw = _widthPx - pad * 2;
@@ -657,46 +726,69 @@ internal sealed unsafe class RopeCanvas : IDisposable
         int radius = Px(10);
         if (bw <= Px(240) || bh <= Px(140)) return;
 
-        for (int i = 3; i >= 1; i--)
-            FillRoundRectRgb(bx + i, by + i * 2, bw, bh, radius, 0x101828, 8 * i);
-        FillRoundRectRgb(bx, by, bw, bh, radius, 0xD8DCE6, 255);
-        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, Math.Max(1, radius - 1), 0xFFFFFF, 255);
+        // 6 层递减 alpha 的柔和投影，替代 3 层硬边圆角矩形（P2-1）。
+        DrawSoftShadow(bx, by, bw, bh, radius, t.IsHighContrast ? 0 : 64);
+        FillRoundRectRgb(bx, by, bw, bh, radius, t.Border, 255);
+        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, Math.Max(1, radius - 1), t.Window, 255);
 
-        int titleH = Px(40);
+        int titleH = Px(TitleHeightDip);
         for (int yy = by + 1; yy < by + titleH; yy++)
             for (int xx = bx + 1; xx < bx + bw - 1; xx++)
             {
                 double cov = RoundCoverage(xx + 0.5, yy + 0.5,
                     bx + 1, by + 1, bw - 2, titleH - 1, radius - 1);
-                if (cov > 0) PutRgb(xx, yy, 0xF8F9FC, 255, cov);
+                if (cov > 0) PutRgb(xx, yy, t.TitleBar, 255, cov);
             }
-        for (int xx = bx + 1; xx < bx + bw - 1; xx++)
-            PutRgb(xx, by + titleH, 0xE5E7EB, 255);
-        for (int yy = by + Px(8); yy < by + titleH - Px(8); yy++)
-        {
-            double t = (yy - by - Px(8)) / (double)Math.Max(1, titleH - Px(16));
-            int rgb = (Lerp(0x4F, 0x2A, t) << 16) | (Lerp(0x5B, 0xA9, t) << 8)
-                | Lerp(0xD5, 0xE0, t);
-            for (int xx = bx + Px(2); xx < bx + Px(5); xx++) PutRgb(xx, yy, rgb, 255);
-        }
+        FillRectRgb(bx + 1, by + titleH, bw - 2, 1, t.Divider, 255);
+        for (int yy = by + 1; yy < by + titleH; yy++)
+            for (int xx = bx + 1; xx < bx + Px(4); xx++)
+            {
+                double cov = RoundCoverage(xx + 0.5, yy + 0.5,
+                    bx + 1, by + 1, bw - 2, titleH - 1, radius - 1);
+                if (cov <= 0) continue;
+                double tt = (yy - by) / (double)Math.Max(1, titleH - 1);
+                int rgb = (Lerp(0x4F, 0x2A, tt) << 16) | (Lerp(0x5B, 0xA9, tt) << 8)
+                    | Lerp(0xD5, 0xE0, tt);
+                PutRgb(xx, yy, rgb, 255, cov);
+            }
 
         int tx = bx + Px(16);
-        DrawNoticeLine(frame.Title, tx, by + Px(10), Px(120),
-            Math.Max(12, Px(13)), 700, 0x252A34);
+        int titleFont = Math.Max(12, Px(13));
+        byte[]? titleMask = BuildTextMask(frame.Title, titleFont, 700, out int tmw, out _);
+        int titleW = InkWidth(titleMask, tmw, titleFont + 6);
+        DrawNoticeLine(frame.Title, tx, by + (titleH - titleFont) / 2 - Px(1),
+            Px(220), titleFont, 700, t.TextPrimary
+        );
         if (!string.IsNullOrEmpty(frame.Subtitle))
-            DrawNoticeLine(frame.Subtitle, tx + Px(76), by + Px(13),
-                bw - Px(190), Math.Max(10, Px(11)), 400, 0x8A93A6);
+            DrawNoticeLine(frame.Subtitle, tx + titleW + Px(10),
+                by + (titleH - Math.Max(11, Px(11))) / 2,
+                bw - (tx - bx) - titleW - Px(120), Math.Max(11, Px(11)), 400, t.TextMuted);
 
-        int closeS = Px(26);
-        int closeX = bx + bw - closeS - Px(8);
-        int closeY = by + (titleH - closeS) / 2;
-        FillRoundRectRgb(closeX, closeY, closeS, closeS, Px(6), 0xEFEFF4, 255);
-        DrawNoticeLine("×", closeX + Px(7), closeY + Px(3), closeS - Px(4),
-            Math.Max(12, Px(15)), 400, 0x5B6272);
-        layout.Close = (closeX, closeY, closeS, closeS);
+        int btnH = Px(32);
+        int closeW = Px(46);
+        int closeX = bx + bw - closeW - Px(2);
+        int closeY = by + (titleH - btnH) / 2;
+        bool closeHot = frame.Hover == ToolHover.Close;
+        bool closeDown = closeHot && frame.Pressed;
+        DrawCaptionButton(closeX, closeY, closeW, btnH,
+            closeHot, closeDown, t.IsHighContrast ? t.TextPrimary : 0x5B6272);
+        layout.Close = (closeX, closeY, closeW, btnH);
+
+        if (frame.Mode != ToolMode.Held)
+        {
+            int pinS = Px(32);
+            int pinX = closeX - pinS - Px(2);
+            int pinY = closeY;
+            bool hot = frame.Hover == ToolHover.Pin;
+            bool down = hot && frame.Pressed;
+            int bg = hot ? (down ? t.ControlPressed : t.ControlHover) : t.TitleBar;
+            FillRoundRectRgb(pinX, pinY, pinS, pinS, Px(4), bg, 255);
+            DrawPinIcon(pinX, pinY, pinS, frame.Pinned ? t.Accent : t.TextSecondary);
+            layout.Pin = (pinX, pinY, pinS, pinS);
+        }
 
         int top = by + titleH + Px(12);
-        int bottom = by + bh - Px(34);
+        int bottom = by + bh - Px(36);
         int left = bx + Px(14);
         int right = bx + bw - Px(14);
         int availW = right - left;
@@ -719,145 +811,376 @@ internal sealed unsafe class RopeCanvas : IDisposable
                 break;
         }
 
+        FillRectRgb(bx + 1, by + bh - Px(30), bw - 2, 1, t.Divider, 255);
         if (!string.IsNullOrEmpty(frame.Status))
-            DrawNoticeLine(frame.Status, left + Px(2), by + bh - Px(24),
-                availW - Px(4), Math.Max(10, Px(11)), 400, 0x6B7280);
+            DrawNoticeLine(frame.Status, left + Px(2), by + bh - Px(21),
+                availW - Px(4), Math.Max(10, Px(11)), 400, t.TextSecondary);
+
+        if (frame.ConfirmClose) DrawConfirmOverlay(frame, layout, bx, by, bw, bh, t);
+    }
+
+    /// <summary>关闭确认：不丢内容的三选一，铺在窗口内容之上但保留标题栏。</summary>
+    private void DrawConfirmOverlay(ToolFrame f, ToolLayout l, int bx, int by, int bw, int bh,
+        ThemePalette t)
+    {
+        for (int y = by + 1; y < by + bh - 1; y++)
+            for (int x = bx + 1; x < bx + bw - 1; x++)
+                PutRgb(x, y, t.Scrim, t.IsDark ? 168 : 120, 1.0);
+
+        int dw = Math.Min(Px(380), bw - Px(48));
+        int dh = Px(176);
+        int dx = bx + (bw - dw) / 2;
+        int dy = by + (bh - dh) / 2;
+        DrawSoftShadow(dx, dy, dw, dh, Px(12), t.IsHighContrast ? 0 : 90);
+        FillRoundRectRgb(dx, dy, dw, dh, Px(12), t.CardBorder, 255);
+        FillRoundRectRgb(dx + 1, dy + 1, dw - 2, dh - 2, Px(11), t.Window, 255);
+
+        int font = Math.Max(12, Px(14));
+        DrawTextCentered("保存标注？", dx + Px(12), dy + Px(20), dw - Px(24), font, 700,
+            t.TextPrimary);
+        int bodyFont = Math.Max(11, Px(12));
+        DrawTextCentered("关闭后未保存的标注会丢失。可以先保存一份 PNG 副本。",
+            dx + Px(16), dy + Px(48), dw - Px(32), bodyFont, 400, t.TextSecondary);
+
+        int bwid = Px(104), bhei = Px(32), gap = Px(8);
+        int rowY = dy + dh - bhei - Px(20);
+        int rowX = dx + (dw - (bwid * 3 + gap * 2)) / 2;
+        l.ConfirmSave = (rowX, rowY, bwid, bhei);
+        l.ConfirmDiscard = (rowX + bwid + gap, rowY, bwid, bhei);
+        l.ConfirmCancel = (rowX + (bwid + gap) * 2, rowY, bwid, bhei);
+        DrawButton(l.ConfirmSave, "保存", ButtonStyle.Primary,
+            f.Hover == ToolHover.ConfirmSave, f.Hover == ToolHover.ConfirmSave && f.Pressed, t);
+        DrawButton(l.ConfirmDiscard, "丢弃", ButtonStyle.Secondary,
+            f.Hover == ToolHover.ConfirmDiscard, f.Hover == ToolHover.ConfirmDiscard && f.Pressed, t);
+        DrawButton(l.ConfirmCancel, "取消", ButtonStyle.Secondary,
+            f.Hover == ToolHover.ConfirmCancel, f.Hover == ToolHover.ConfirmCancel && f.Pressed, t);
+    }
+
+    private enum ButtonStyle
+    {
+        Primary,
+        Secondary,
+        Danger,
+    }
+
+    private void DrawButton((int X, int Y, int W, int H) r, string label, ButtonStyle style,
+        bool hover, bool pressed, ThemePalette t)
+    {
+        if (r.W <= 0 || r.H <= 0) return;
+        int bg;
+        int fg;
+        if (style == ButtonStyle.Primary)
+        {
+            bg = pressed ? t.AccentPressed : hover ? t.AccentHover : t.Accent;
+            fg = t.OnAccent;
+            FillRoundRectRgb(r.X, r.Y, r.W, r.H, Px(4), bg, 255);
+        }
+        else
+        {
+            bg = pressed ? t.ControlPressed : hover ? t.ControlHover : t.Control;
+            fg = style == ButtonStyle.Danger ? t.Danger : t.TextPrimary;
+            FillRoundRectRgb(r.X, r.Y, r.W, r.H, Px(4), t.ControlBorder, 255);
+            FillRoundRectRgb(r.X + 1, r.Y + 1, r.W - 2, r.H - 2, Px(4), bg, 255);
+        }
+        int font = Math.Max(11, Px(12));
+        DrawTextCentered(label, r.X + Px(8), r.Y + (r.H - font) / 2, r.W - Px(16),
+            font, 600, fg);
+    }
+
+    /// <summary>Win11 标题栏按钮：46×32 热区，关闭 hover 为 #C42B1C 白叉。</summary>
+    private void DrawCaptionButton(int x, int y, int w, int h, bool hover, bool pressed, int fg)
+    {
+        ThemePalette t = Theme;
+        int bg = hover
+            ? (t.IsHighContrast ? t.Accent : pressed ? 0xA02318 : t.Danger)
+            : t.TitleBar;
+        if (hover) FillRoundRectRgb(x, y, w, h, Px(4), bg, 255);
+        int color = hover ? 0xFFFFFF : fg;
+        int cx = x + w / 2, cy = y + h / 2, arm = Px(5);
+        int thick = Math.Max(2, Px(1));
+        for (int i = -thick; i <= thick; i++)
+        {
+            StrokeTool(cx - arm, cy - arm + i, cx + arm, cy + arm + i, color, 1);
+            StrokeTool(cx + arm, cy - arm + i, cx - arm, cy + arm + i, color, 1);
+        }
+    }
+
+    private void DrawPinIcon(int x, int y, int box, int rgb)
+    {
+        int cx = x + box / 2, cy = y + box / 2;
+        int headW = Px(11), headH = Px(3);
+        FillRoundRectRgb(cx - headW / 2, cy - Px(6), headW, headH, headH / 2, rgb, 255);
+        StrokeTool(cx, cy - Px(3), cx, cy + Px(2), rgb, Math.Max(2, Px(2)));
+        // 针尖：从针杆底部收成一点。
+        StrokeTool(cx, cy + Px(2), cx - Px(2), cy + Px(7), rgb, Math.Max(1, Px(1.4)));
+        StrokeTool(cx, cy + Px(2), cx + Px(2), cy + Px(7), rgb, Math.Max(1, Px(1.4)));
+    }
+
+    /// <summary>柔阴影：从外到内叠加低 alpha 圆角矩形，边界不再出现色阶。</summary>
+    private void DrawSoftShadow(int x, int y, int w, int h, int radius, int baseAlpha)
+    {
+        if (baseAlpha <= 0) return;
+        int steps = 7;
+        for (int i = steps; i >= 1; i--)
+        {
+            double k = i / (double)steps;
+            int alpha = (int)Math.Round(baseAlpha * Math.Pow(1 - k, 2.0));
+            if (alpha <= 0) continue;
+            int grow = Px(i * 1.1);
+            FillRoundRectRgb(x - grow, y + Px(2) + grow / 2, w + grow * 2, h + grow,
+                radius + grow, 0x101828, alpha);
+        }
+    }
+
+    private void FillRectRgb(int x, int y, int w, int h, int rgb, int a)
+    {
+        for (int yy = y; yy < y + h; yy++)
+            for (int xx = x; xx < x + w; xx++)
+                PutRgb(xx, yy, rgb, a);
+    }
+
+    private static int InkWidth(byte[]? mask, int w, int h)
+    {
+        if (mask is null || w <= 0) return 0;
+        int right = 0;
+        int count = Math.Min(mask.Length, w * h);
+        for (int i = 0; i < count; i++)
+        {
+            if (mask[i] <= 8) continue;
+            int x = i % w;
+            if (x >= right) right = x + 1;
+        }
+        return right;
+    }
+
+    private void DrawTextCentered(string text, int x, int y, int maxW, int fontH, int weight, int rgb)
+    {
+        byte[]? mask = BuildTextMask(text, fontH, weight, out int mw, out int mh);
+        if (mask is null) return;
+        int ink = Math.Min(InkWidth(mask, mw, mh), maxW);
+        int dx = x + Math.Max(0, (maxW - ink) / 2) - Px(2);
+        for (int yy = 0; yy < mh; yy++)
+            for (int xx = 0; xx < ink; xx++)
+            {
+                int a = mask[yy * mw + xx];
+                if (a > 0) PutRgb(dx + xx, y + yy, rgb, a);
+            }
+    }
+
+    private (int X, int Y) ToScreen(int x, int y, (int X, int Y, int W, int H) c, double zoom,
+        int panX, int panY)
+    {
+        if (Math.Abs(zoom - 1) < 0.001 && panX == 0 && panY == 0) return (x, y);
+        double cx = c.X + c.W / 2.0, cy = c.Y + c.H / 2.0;
+        return ((int)Math.Round(cx + (x - cx) * zoom + panX),
+                (int)Math.Round(cy + (y - cy) * zoom + panY));
+    }
+
+    private (int X, int Y) ToBase(int x, int y, (int X, int Y, int W, int H) c, double zoom,
+        int panX, int panY)
+    {
+        if (Math.Abs(zoom - 1) < 0.001 && panX == 0 && panY == 0) return (x, y);
+        double cx = c.X + c.W / 2.0, cy = c.Y + c.H / 2.0;
+        return ((int)Math.Round(cx + (x - cx - panX) / zoom),
+                (int)Math.Round(cy + (y - cy - panY) / zoom));
     }
 
     private void DrawQuickLook(ToolFrame f, ToolLayout l, int left, int top, int w, int h)
     {
-        int thumbH = Px(40);
-        int imgH = h - thumbH - Px(14);
+        ThemePalette t = Theme;
+        int thumbH = Px(42);
+        int imgH = h - thumbH - Px(16);
         var img = (left, top, w, imgH);
-        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, img);
+        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, img, img,
+            f.Zoom, f.PanX, f.PanY);
         l.Canvas = img;
 
-        int tw = Px(52), gap = Px(8);
-        int n = Math.Min(f.Paths.Count, 8);
-        int total = n * tw + Math.Max(0, n - 1) * gap;
-        int sx = left + (w - total) / 2;
+        int tw = Px(56), gap = Px(8), maxVisible = 8;
+        int total = f.Paths.Count;
+        int n = Math.Min(total, maxVisible);
+        if (n <= 0) return;
+        // 第 9 张起不再「消失」：缩略图条随当前项横向滚动（P1-9）。
+        int start = total <= maxVisible ? 0 : Math.Clamp(f.Index - n / 2, 0, total - n);
+        int stripW = n * tw + (n - 1) * gap;
+        int sx = left + (w - stripW) / 2;
         int sy = top + imgH + Px(10);
         for (int i = 0; i < n; i++)
         {
+            int idx = start + i;
             var r = (sx + i * (tw + gap), sy, tw, thumbH);
+            bool selected = idx == f.Index;
+            // P2-10：选中项外圈 8% 品牌色柔光 + 2 DIP 实环，比单根硬边更接近 Fluent。
+            if (selected)
+                FillRoundRectRgb(r.Item1 - Px(4), r.Item2 - Px(4), tw + Px(8),
+                    thumbH + Px(8), Px(8), t.Accent, 26);
             FillRoundRectRgb(r.Item1 - Px(2), r.Item2 - Px(2), tw + Px(4), thumbH + Px(4),
-                Px(5), i == f.Index ? 0x4F5BD5 : 0xE9EBF2, 255);
-            DrawToolImage(f.Paths[i], r);
+                Px(6), selected ? t.Accent : t.Border, 255);
+            DrawToolImage(f.Paths[idx], r, r, 1, 0, 0, useThemeSurface: false);
             l.Thumbs.Add(r);
+            l.ThumbIndexes.Add(idx);
         }
     }
 
     private void DrawMarkup(ToolFrame f, ToolLayout l, int left, int top, int w, int h)
     {
-        int toolsW = Px(54);
-        int contentH = h - Px(44);
-        FillRoundRectRgb(left, top, toolsW, contentH, Px(8), 0xF5F6FA, 255);
-        string[] glyphs = { "▭", "○", "↗", "✎" };
-        int bs = Px(36);
-        for (int i = 0; i < glyphs.Length; i++)
+        ThemePalette t = Theme;
+        int toolsW = Px(56);
+        int contentH = h - Px(42);
+        FillRoundRectRgb(left, top, toolsW, contentH, Px(8), t.SurfaceAlt, 255);
+        int bs = Px(40);
+        for (int i = 0; i < 4; i++)
         {
-            var r = (left + Px(9), top + Px(10) + i * (bs + Px(6)), bs, bs);
+            var r = (left + Px(8), top + Px(8) + i * (bs + Px(4)), bs, bs);
             bool on = i == f.ToolIndex;
-            FillRoundRectRgb(r.Item1, r.Item2, bs, bs, Px(6), on ? 0x4F5BD5 : 0xFFFFFF, 255);
-            if (!on) FillRoundRectRgb(r.Item1, r.Item2, bs, 1, 0, 0xD8DCE6, 255);
-            DrawNoticeLine(glyphs[i], r.Item1 + Px(9), r.Item2 + Px(9), bs - Px(10),
-                Math.Max(11, Px(15)), 600, on ? 0xFFFFFF : 0x5B6272);
+            bool hot = f.Hover == ToolHover.Tool && f.HoverIndex == i;
+            int bg = on ? t.Accent : hot ? t.ControlHover : t.SurfaceAlt;
+            if (on || hot) FillRoundRectRgb(r.Item1, r.Item2, bs, bs, Px(4), bg, 255);
+            DrawToolIcon(i, r, on ? t.OnAccent : t.TextSecondary);
             l.Tools.Add(r);
         }
 
         int cx = left + toolsW + Px(10);
         int cw = w - toolsW - Px(10);
         var canvas = (cx, top, cw, contentH);
-        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas);
-        foreach (MarkShape s in f.Shapes) DrawMarkShape(s, 0xEF8A24, Px(2));
-        if (f.Preview is not null) DrawMarkShape(f.Preview, 0xEF8A24, Px(2));
+        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas, canvas,
+            f.Zoom, f.PanX, f.PanY);
+        int mark = t.IsHighContrast ? t.Accent : 0xEF8A24;
+        foreach (MarkShape s in f.Shapes) DrawMarkShapeOnCanvas(s, canvas, f.Zoom, f.PanX, f.PanY, mark);
+        if (f.Preview is not null)
+            DrawMarkShapeOnCanvas(f.Preview, canvas, f.Zoom, f.PanX, f.PanY, mark);
         l.Canvas = canvas;
 
-        int bwid = Px(88), bhei = Px(30);
+        int bhei = Px(32), bwid = Px(96);
         int by2 = top + h - bhei - Px(2);
-        l.Cancel = (cx + cw - bwid * 2 - Px(10), by2, bwid, bhei);
+        l.Cancel = (cx + cw - bwid * 2 - Px(8), by2, bwid, bhei);
         l.Save = (cx + cw - bwid, by2, bwid, bhei);
-        FillRoundRectRgb(l.Cancel.X - 1, l.Cancel.Y - 1, bwid + 2, bhei + 2,
-            Px(7), 0xD8DCE6, 255);
-        FillRoundRectRgb(l.Cancel.X, l.Cancel.Y, bwid, bhei, Px(6), 0xFFFFFF, 255);
-        FillRoundRectRgb(l.Save.X, l.Save.Y, bwid, bhei, Px(6), 0x4F5BD5, 255);
-        DrawNoticeLine("取消", l.Cancel.X + Px(30), l.Cancel.Y + Px(8), Px(44),
-            Math.Max(11, Px(12)), 600, 0x5B6272);
-        DrawNoticeLine("保存", l.Save.X + Px(30), l.Save.Y + Px(8), Px(44),
-            Math.Max(11, Px(12)), 600, 0xFFFFFF);
+        DrawButton(l.Cancel, "取消", ButtonStyle.Secondary,
+            f.Hover == ToolHover.Cancel, f.Hover == ToolHover.Cancel && f.Pressed, t);
+        DrawButton(l.Save, "保存", ButtonStyle.Primary,
+            f.Hover == ToolHover.Save, f.Hover == ToolHover.Save && f.Pressed, t);
     }
 
     private void DrawTrim(ToolFrame f, ToolLayout l, int left, int top, int w, int h)
     {
-        int contentH = h - Px(76);
+        ThemePalette t = Theme;
+        int contentH = h - Px(44);
         var canvas = (left, top, w, contentH);
-        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas);
+        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas, canvas,
+            f.Zoom, f.PanX, f.PanY);
         l.Canvas = canvas;
 
-        int trackY = top + contentH + Px(12);
-        int trackH = Px(22);
-        FillRoundRectRgb(left, trackY, w, trackH, Px(4), 0xE9EBF2, 255);
-        int r0 = left + Px(60), r1 = left + w - Px(60);
-        FillRoundRectRgb(r0, trackY, Math.Max(1, r1 - r0), trackH, Px(4), 0xC9CDFB, 255);
-        int handle = Px(8);
-        FillRoundRectRgb(r0, trackY - Px(3), handle, trackH + Px(6), Px(3), 0x4F5BD5, 255);
-        FillRoundRectRgb(r1 - handle, trackY - Px(3), handle, trackH + Px(6), Px(3), 0x4F5BD5, 255);
-
-        int bwid = Px(88), bhei = Px(30);
+        // v1 不做视频编码：这里只预览 + 交给系统播放器，不再放一个点了没结果的「修剪」。
+        int bhei = Px(32), bwid = Px(160), cancelW = Px(88);
         int by2 = top + h - bhei - Px(2);
-        l.Cancel = (left + w - bwid * 2 - Px(10), by2, bwid, bhei);
+        l.Cancel = (left, by2, cancelW, bhei);
         l.Trim = (left + w - bwid, by2, bwid, bhei);
-        FillRoundRectRgb(l.Cancel.X - 1, l.Cancel.Y - 1, bwid + 2, bhei + 2,
-            Px(7), 0xD8DCE6, 255);
-        FillRoundRectRgb(l.Cancel.X, l.Cancel.Y, bwid, bhei, Px(6), 0xFFFFFF, 255);
-        FillRoundRectRgb(l.Trim.X, l.Trim.Y, bwid, bhei, Px(6), 0x4F5BD5, 255);
-        DrawNoticeLine("取消", l.Cancel.X + Px(30), l.Cancel.Y + Px(8), Px(44),
-            Math.Max(11, Px(12)), 600, 0x5B6272);
-        DrawNoticeLine("修剪", l.Trim.X + Px(30), l.Trim.Y + Px(8), Px(44),
-            Math.Max(11, Px(12)), 600, 0xFFFFFF);
+        DrawButton(l.Cancel, "关闭", ButtonStyle.Secondary,
+            f.Hover == ToolHover.Cancel, f.Hover == ToolHover.Cancel && f.Pressed, t);
+        DrawButton(l.Trim, "用系统播放器打开", ButtonStyle.Primary,
+            f.Hover == ToolHover.Primary, f.Hover == ToolHover.Primary && f.Pressed, t);
     }
 
     private void DrawHeld(ToolFrame f, ToolLayout l, int left, int top, int w, int h)
     {
+        ThemePalette t = Theme;
         int contentH = h - Px(48);
         var canvas = (left, top, w, contentH);
-        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas);
+        DrawToolImage(f.Paths.Count > 0 ? f.Paths[f.Index] : null, canvas, canvas,
+            f.Zoom, f.PanX, f.PanY);
         l.Canvas = canvas;
 
         int bwid = Px(132), bhei = Px(32);
         int bx2 = left + (w - bwid) / 2, by2 = top + h - bhei - Px(2);
-        FillRoundRectRgb(bx2, by2, bwid, bhei, Px(6), 0x4F5BD5, 255);
-        DrawNoticeLine("放回绳上", bx2 + Px(30), by2 + Px(9), Px(96),
-            Math.Max(11, Px(12)), 600, 0xFFFFFF);
         l.PutBack = (bx2, by2, bwid, bhei);
+        DrawButton(l.PutBack, "放回绳上", ButtonStyle.Primary,
+            f.Hover == ToolHover.Cancel, f.Hover == ToolHover.Cancel && f.Pressed, t);
     }
 
-    private void DrawToolImage(string? path, (int X, int Y, int W, int H) r)
+    /// <summary>20 DIP 线性图标：矩形 / 椭圆 / 箭头 / 笔，替代不可控的 Unicode 字形（P2-3）。</summary>
+    private void DrawToolIcon(int kind, (int X, int Y, int W, int H) r, int rgb)
     {
+        int cx = r.X + r.W / 2, cy = r.Y + r.H / 2;
+        int s = Px(9);
+        int thick = Math.Max(2, Px(1.7));
+        switch (kind)
+        {
+            case 0:
+                StrokeTool(cx - s, cy - s + Px(2), cx + s, cy - s + Px(2), rgb, thick);
+                StrokeTool(cx + s, cy - s + Px(2), cx + s, cy + s - Px(2), rgb, thick);
+                StrokeTool(cx + s, cy + s - Px(2), cx - s, cy + s - Px(2), rgb, thick);
+                StrokeTool(cx - s, cy + s - Px(2), cx - s, cy - s + Px(2), rgb, thick);
+                break;
+            case 1:
+                for (int i = 0; i < 96; i++)
+                {
+                    double a0 = i * Math.PI * 2 / 96, a1 = (i + 1) * Math.PI * 2 / 96;
+                    StrokeTool(cx + (int)(s * Math.Cos(a0)), cy + (int)(s * 0.8 * Math.Sin(a0)),
+                        cx + (int)(s * Math.Cos(a1)), cy + (int)(s * 0.8 * Math.Sin(a1)), rgb, thick);
+                }
+                break;
+            case 2:
+                StrokeTool(cx - s, cy + s, cx + s, cy - s, rgb, thick);
+                StrokeTool(cx + s, cy - s, cx + s - Px(5), cy - s + Px(2), rgb, thick);
+                StrokeTool(cx + s, cy - s, cx + s - Px(2), cy - s + Px(5), rgb, thick);
+                break;
+            default:
+                // 笔：两条平行斜线构成笔身，左下平口 + 顶端短横构成笔尖/笔帽。
+                StrokeTool(cx - s, cy + s, cx + s - Px(2), cy - s + Px(2), rgb, thick);
+                StrokeTool(cx - s + Px(4), cy + s, cx + s + Px(2), cy - s + Px(2), rgb, thick);
+                StrokeTool(cx - s, cy + s, cx - s + Px(5), cy + s, rgb, thick);
+                StrokeTool(cx + s - Px(4), cy - s + Px(1), cx + s, cy - s + Px(4), rgb, thick);
+                break;
+        }
+    }
+
+    private void DrawMarkShapeOnCanvas(MarkShape s, (int X, int Y, int W, int H) c,
+        double zoom, int panX, int panY, int rgb)
+    {
+        (int x0, int y0) = ToScreen(s.X0, s.Y0, c, zoom, panX, panY);
+        (int x1, int y1) = ToScreen(s.X1, s.Y1, c, zoom, panX, panY);
+        DrawMarkShape(new MarkShape(s.Kind, x0, y0, x1, y1), rgb, Math.Max(2, Px(2)));
+    }
+
+    private void DrawToolImage(string? path, (int X, int Y, int W, int H) r,
+        (int X, int Y, int W, int H) clip, double zoom = 1, int panX = 0, int panY = 0,
+        bool useThemeSurface = true)
+    {
+        ThemePalette t = Theme;
         if (r.W <= 2 || r.H <= 2) return;
-        FillRoundRectRgb(r.X, r.Y, r.W, r.H, Px(6), 0xF3F4F8, 255);
+        if (useThemeSurface)
+            FillRoundRectRgb(r.X, r.Y, r.W, r.H, Px(6), t.Surface, 255);
+        else
+            FillRoundRectRgb(r.X, r.Y, r.W, r.H, Px(4), t.Surface, 255);
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
         {
-            DrawNoticeLine("（无图片）", r.X + Px(20), r.Y + r.H / 2, r.W - Px(40),
-                Math.Max(11, Px(13)), 400, 0x9AA3B2);
+            DrawTextCentered("（无图片）", r.X + Px(16), r.Y + r.H / 2 - Px(8),
+                r.W - Px(32), Math.Max(11, Px(13)), 400, t.TextMuted);
             return;
         }
-        int inset = Px(4);
-        int iw = r.W - inset * 2, ih = r.H - inset * 2;
-        if (iw <= 0 || ih <= 0) return;
-        byte[]? pixels = _thumbs.Get(path, iw, ih);
-        if (pixels is null || pixels.Length < iw * ih * 4) return;
-        for (int yy = 0; yy < ih; yy++)
-            for (int xx = 0; xx < iw; xx++)
+        int inset = useThemeSurface ? Px(4) : 0;
+        int iw = Math.Max(1, r.W - inset * 2), ih = Math.Max(1, r.H - inset * 2);
+        int dw = Math.Max(1, (int)Math.Round(iw * zoom));
+        int dh = Math.Max(1, (int)Math.Round(ih * zoom));
+        int dx = r.X + inset + (iw - dw) / 2 + panX;
+        int dy = r.Y + inset + (ih - dh) / 2 + panY;
+        byte[]? pixels = _thumbs.Get(path, dw, dh);
+        if (pixels is null || pixels.Length < dw * dh * 4) return;
+        int radius = Math.Abs(zoom - 1) < 0.001 ? Px(useThemeSurface ? 4 : 3) : Px(4);
+        for (int yy = 0; yy < dh; yy++)
+            for (int xx = 0; xx < dw; xx++)
             {
-                int src = (yy * iw + xx) * 4;
+                int gx = dx + xx, gy = dy + yy;
+                if (gx < clip.X || gx >= clip.X + clip.W || gy < clip.Y || gy >= clip.Y + clip.H)
+                    continue;
+                int src = (yy * dw + xx) * 4;
                 int a = pixels[src + 3];
                 if (a == 0) continue;
-                double cov = RoundCoverage(r.X + inset + xx + 0.5, r.Y + inset + yy + 0.5,
-                    r.X + inset, r.Y + inset, iw, ih, Px(4));
+                // 缩放后由画布圆角裁剪；1:1 时保留图片内缘圆角。
+                double cov = Math.Abs(zoom - 1) < 0.001
+                    ? RoundCoverage(gx + 0.5, gy + 0.5, dx, dy, dw, dh, radius)
+                    : RoundCoverage(gx + 0.5, gy + 0.5, clip.X, clip.Y, clip.W, clip.H, Px(6));
                 if (cov > 0)
-                    PutCoverage(r.X + inset + xx, r.Y + inset + yy,
-                        pixels[src], pixels[src + 1], pixels[src + 2], a, cov);
+                    PutCoverage(gx, gy, pixels[src], pixels[src + 1], pixels[src + 2], a, cov);
             }
     }
 
@@ -954,6 +1277,172 @@ internal sealed unsafe class RopeCanvas : IDisposable
         (int)Math.Round(from + (to - from) * Math.Clamp(t, 0, 1));
 
     /// <summary>
+    /// 更新面板（v1.6）：版本、渠道、进度、说明与两个动作。
+    /// 取代「3.2 秒通知 + 自动重启」的黑箱流程（docs/11 P0-3 / P1-7）。
+    /// </summary>
+    internal void RenderUpdate(UpdateView v, UpdateLayout layout)
+    {
+        new Span<uint>(_bits, _widthPx * _heightPx).Clear();
+        _cardRects.Clear();
+        _inCard = false;
+        _alphaScale = 1;
+        layout.Reset();
+
+        ThemePalette t = Theme;
+        int pad = Px(8), bx = pad, by = pad;
+        int bw = _widthPx - pad * 2, bh = _heightPx - pad * 2;
+        int radius = Px(10);
+        if (bw <= Px(200) || bh <= Px(140)) return;
+
+        DrawSoftShadow(bx, by, bw, bh, radius, t.IsHighContrast ? 0 : 64);
+        FillRoundRectRgb(bx, by, bw, bh, radius, t.Border, 255);
+        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, radius - 1, t.Window, 255);
+
+        int titleH = Px(44);
+        for (int yy = by + 1; yy < by + titleH; yy++)
+            for (int xx = bx + 1; xx < bx + bw - 1; xx++)
+            {
+                double cov = RoundCoverage(xx + 0.5, yy + 0.5,
+                    bx + 1, by + 1, bw - 2, titleH - 1, radius - 1);
+                if (cov > 0) PutRgb(xx, yy, t.TitleBar, 255, cov);
+            }
+        FillRectRgb(bx + 1, by + titleH, bw - 2, 1, t.Divider, 255);
+        DrawNoticeLine("软件更新", bx + Px(20), by + Px(14), Px(140),
+            Math.Max(12, Px(13)), 700, t.TextPrimary);
+
+        int btnH = Px(32), closeW = Px(46);
+        int closeX = bx + bw - closeW - Px(2);
+        int closeY = by + (titleH - btnH) / 2;
+        DrawCaptionButton(closeX, closeY, closeW, btnH,
+            v.Hover == UpdateHover.Close, v.Hover == UpdateHover.Close && v.Pressed, 0x5B6272);
+        layout.Close = (closeX, closeY, closeW, btnH);
+
+        int left = bx + Px(24), right = bx + bw - Px(24);
+        int y = by + titleH + Px(18);
+
+        string line = v.Available.Length > 0 && v.Available != v.Current
+            ? v.Current + "  →  " + v.Available
+            : v.Current + "  已是最新";
+        DrawNoticeLine(line, left, y, right - left, Math.Max(16, Px(20)), 600, t.TextPrimary);
+        y += Px(34);
+
+        string channel = v.Channel == "msix" ? "MSIX 安装包" : "便携版";
+        int chipW = Px(channel.Length > 4 ? 92 : 72), chipH = Px(22);
+        FillRoundRectRgb(left, y, chipW, chipH, Px(4), t.SurfaceAlt, 255);
+        DrawTextCentered(channel, left, y + Px(4), chipW, Math.Max(10, Px(11)), 600, t.TextSecondary);
+        if (v.Progress >= 0 && !v.Indeterminate)
+        {
+            string pct = Math.Clamp(v.Progress, 0, 100) + "%";
+            DrawNoticeLine(pct, right - Px(40), y + Px(4), Px(40),
+                Math.Max(10, Px(11)), 600, t.TextSecondary);
+        }
+        y += Px(34);
+
+        int barH = Px(6);
+        FillRoundRectRgb(left, y, right - left, barH, barH / 2, t.SurfaceAlt, 255);
+        int fill = v.Indeterminate ? (right - left) / 3 : (right - left) * Math.Clamp(v.Progress, 0, 100) / 100;
+        if (fill > 0)
+            FillRoundRectRgb(left, y, Math.Max(barH, fill), barH, barH / 2, t.Accent, 255);
+        y += Px(20);
+
+        DrawNoticeLine(v.Message, left, y, right - left,
+            Math.Max(11, Px(12)), 400, t.TextSecondary);
+
+        int rowY = by + bh - btnH - Px(24);
+        FillRectRgb(bx + 1, rowY - Px(16), bw - 2, 1, t.Divider, 255);
+        int primaryW = Px(v.PrimaryWide ? 148 : 96), secondaryW = Px(96), gap = Px(8);
+        DrawNoticeLine("确认后才会安装", left, rowY + Px(10),
+            Math.Max(Px(60), right - left - primaryW - secondaryW - gap - Px(16)),
+            Math.Max(10, Px(11)), 400, t.TextMuted);
+
+        layout.Secondary = v.SecondaryLabel.Length > 0
+            ? (right - secondaryW, rowY, secondaryW, btnH)
+            : default;
+        layout.Primary = (right - secondaryW - gap - primaryW, rowY, primaryW, btnH);
+        if (v.SecondaryLabel.Length > 0)
+            DrawButton(layout.Secondary, v.SecondaryLabel, ButtonStyle.Secondary,
+                v.Hover == UpdateHover.Secondary, v.Hover == UpdateHover.Secondary && v.Pressed, t);
+        DrawButton(layout.Primary, v.PrimaryLabel, ButtonStyle.Primary,
+            v.Hover == UpdateHover.Primary, v.Hover == UpdateHover.Primary && v.Pressed, t);
+    }
+
+    /// <summary>
+    /// 快捷键录制器（P1-5）：一个可聚焦的小面板，把「按下的组合」直接显示成大号字，
+    /// 让用户看得见自己按了什么；成功/被占用都写在同一行说明里。
+    /// </summary>
+    internal void RenderShortcut(ShortcutView v, ShortcutLayout layout)
+    {
+        new Span<uint>(_bits, _widthPx * _heightPx).Clear();
+        _cardRects.Clear();
+        _inCard = false;
+        _alphaScale = 1;
+        layout.Reset();
+
+        ThemePalette t = Theme;
+        int pad = Px(8), bx = pad, by = pad;
+        int bw = _widthPx - pad * 2, bh = _heightPx - pad * 2;
+        int radius = Px(10);
+        if (bw <= Px(200) || bh <= Px(140)) return;
+
+        DrawSoftShadow(bx, by, bw, bh, radius, t.IsHighContrast ? 0 : 64);
+        FillRoundRectRgb(bx, by, bw, bh, radius, t.Border, 255);
+        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, radius - 1, t.Window, 255);
+
+        int titleH = Px(44);
+        for (int yy = by + 1; yy < by + titleH; yy++)
+            for (int xx = bx + 1; xx < bx + bw - 1; xx++)
+            {
+                double cov = RoundCoverage(xx + 0.5, yy + 0.5,
+                    bx + 1, by + 1, bw - 2, titleH - 1, radius - 1);
+                if (cov > 0) PutRgb(xx, yy, t.TitleBar, 255, cov);
+            }
+        FillRectRgb(bx + 1, by + titleH, bw - 2, 1, t.Divider, 255);
+        DrawNoticeLine("更改快捷键", bx + Px(20), by + Px(14), Px(160),
+            Math.Max(12, Px(13)), 700, t.TextPrimary);
+
+        int btnH = Px(32), closeW = Px(46);
+        int closeX = bx + bw - closeW - Px(2);
+        int closeY = by + (titleH - btnH) / 2;
+        DrawCaptionButton(closeX, closeY, closeW, btnH,
+            v.Hover == ShortcutHover.Close, v.Hover == ShortcutHover.Close && v.Pressed, t.TextSecondary);
+        layout.Close = (closeX, closeY, closeW, btnH);
+
+        int left = bx + Px(24), right = bx + bw - Px(24);
+        int y = by + titleH + Px(20);
+
+        // 大号「当前组合」框：录制中显示刚按下的候选值，未录制时显示已生效的值。
+        string shown = v.Candidate is { Length: > 0 } candidate ? candidate
+            : v.Current is { Length: > 0 } && v.Current != ClipLine.Domain.HotKeyModel.NoneShortcut
+                ? v.Current
+                : "未设置";
+        int boxH = Px(58);
+        FillRoundRectRgb(left, y, right - left, boxH, Px(8), t.SurfaceAlt, 255);
+        FillRoundRectRgb(left, y, right - left, 1, 1, t.Divider, 255);
+        FillRoundRectRgb(left, y + boxH - 1, right - left, 1, 1, t.Divider, 255);
+        DrawTextCentered(shown, left, y + (boxH - Math.Max(18, Px(20))) / 2,
+            right - left, Math.Max(18, Px(20)), 600,
+            v.Candidate is { Length: > 0 } ? t.Accent : t.TextPrimary);
+        y += boxH + Px(16);
+
+        DrawNoticeLine("按住 Ctrl / Alt / Shift / Win 之一，再按字母或数字键", left, y,
+            right - left, Math.Max(11, Px(12)), 400, t.TextMuted);
+        y += Px(20);
+        if (v.Message.Length > 0)
+            DrawNoticeLine(v.Message, left, y, right - left,
+                Math.Max(11, Px(12)), 400, t.TextSecondary);
+
+        int rowY = by + bh - btnH - Px(20);
+        FillRectRgb(bx + 1, rowY - Px(14), bw - 2, 1, t.Divider, 255);
+        int primaryW = Px(88), secondaryW = Px(104), gap = Px(8);
+        layout.Secondary = (left, rowY, secondaryW, btnH);
+        layout.Primary = (right - primaryW, rowY, primaryW, btnH);
+        DrawButton(layout.Secondary, "恢复默认", ButtonStyle.Secondary,
+            v.Hover == ShortcutHover.Secondary, v.Hover == ShortcutHover.Secondary && v.Pressed, t);
+        DrawButton(layout.Primary, "完成", ButtonStyle.Primary,
+            v.Hover == ShortcutHover.Primary, v.Hover == ShortcutHover.Primary && v.Pressed, t);
+    }
+
+    /// <summary>
     /// 画一张 Fluent 风格通知卡：圆角白底 + 1px 描边 + 三层柔阴影 +
     /// 品牌渐变竖条 + E 双线小图标 + 抗锯齿标题/正文。整窗透明度由 Present 的
     /// SourceConstantAlpha 控制，所以内容只需在显示时渲染一次。
@@ -965,18 +1454,17 @@ internal sealed unsafe class RopeCanvas : IDisposable
         _inCard = false;
         _alphaScale = 1;
 
+        ThemePalette t = Theme;
         int pad = Px(8);
         int bx = pad, by = pad;
         int bw = _widthPx - pad * 2, bh = _heightPx - pad * 2 - Px(2);
         int radius = Px(12);
         if (bw <= 0 || bh <= 0) return;
 
-        for (int i = 3; i >= 1; i--)
-            FillRoundRectRgb(bx + i, by + i * 2, bw, bh, radius, 0x101828, 6 * i);
-
-        // 稍大的浅灰底 + 内缩 1px 的白底 = 1px 抗锯齿描边。
-        FillRoundRectRgb(bx, by, bw, bh, radius, 0xE5E7EB, 255);
-        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, Math.Max(1, radius - 1), 0xFFFFFF, 255);
+        DrawSoftShadow(bx, by, bw, bh, radius, t.IsHighContrast ? 0 : 54);
+        FillRoundRectRgb(bx, by, bw, bh, radius, t.CardBorder, 255);
+        FillRoundRectRgb(bx + 1, by + 1, bw - 2, bh - 2, Math.Max(1, radius - 1),
+            t.CardSurface, 255);
 
         // 左侧品牌渐变竖条（#4F5BD5 → #2AA9E0），两端避开圆角。
         int accentW = Math.Max(2, Px(3));
@@ -984,28 +1472,37 @@ internal sealed unsafe class RopeCanvas : IDisposable
         int ay0 = by + radius, ay1 = by + bh - radius;
         for (int y = ay0; y < ay1; y++)
         {
-            double t = (y - ay0) / (double)Math.Max(1, ay1 - ay0 - 1);
-            int rgb = (Lerp(0x4F, 0x2A, t) << 16) | (Lerp(0x5B, 0xA9, t) << 8) | Lerp(0xD5, 0xE0, t);
+            double k = (y - ay0) / (double)Math.Max(1, ay1 - ay0 - 1);
+            int rgb = (Lerp(0x4F, 0x2A, k) << 16) | (Lerp(0x5B, 0xA9, k) << 8) | Lerp(0xD5, 0xE0, k);
             for (int x = ax; x < ax + accentW; x++) PutRgb(x, y, rgb, 255);
         }
 
-        int iconX = bx + Px(14), iconY = by + Px(13), iconSize = Px(20);
+        int iconSize = Px(24);
+        int iconX = bx + Px(14), iconY = by + Px(10);
         DrawLogoMark(iconX, iconY, iconSize);
 
-        int textX = iconX + iconSize + Px(12);
-        int titleH = Math.Max(12, Px(12));
-        int bodyH = Math.Max(11, Px(11));
-        DrawNoticeLine(title, textX, by + Px(12), bw - (textX - bx) - Px(12), titleH, 700, 0x252A34);
+        // 关闭按钮：24×24 热区，视觉上只画一个轻量叉，不抢标题。
+        int closeS = Px(24);
+        int closeX = bx + bw - closeS - Px(4), closeY = by + Px(4);
+        int cx = closeX + closeS / 2, cy = closeY + closeS / 2, arm = Px(4);
+        for (int i = -1; i <= 1; i++)
+        {
+            StrokeTool(cx - arm, cy - arm + i, cx + arm, cy + arm + i, t.TextMuted, 1);
+            StrokeTool(cx + arm, cy - arm + i, cx - arm, cy + arm + i, t.TextMuted, 1);
+        }
 
-        int maxBodyW = bw - (textX - bx) - Px(12);
-        List<string> lines = WrapText(text, maxBodyW, bodyH, 2);
-        int lineH = bodyH + Px(2);
-        int bodyTop = lines.Count == 1
-            ? by + (bh - bodyH) / 2           // 单行时垂直居中
-            : by + Px(30);
+        int textX = iconX + iconSize + Px(10);
+        int titleFont = Math.Max(12, Px(12));
+        int bodyFont = Math.Max(11, Px(11));
+        int maxW = closeX - textX - Px(6);
+        DrawNoticeLine(title, textX, by + Px(8), maxW, titleFont, 700, t.TextPrimary);
+
+        List<string> lines = WrapText(text, maxW, bodyFont, 2);
+        int lineH = bodyFont + Px(4);
+        int bodyTop = by + Px(25);
         for (int i = 0; i < lines.Count; i++)
             DrawNoticeLine(lines[i], textX, bodyTop + i * lineH,
-                maxBodyW, bodyH, 400, 0x6B7280);
+                maxW, bodyFont, 400, t.TextSecondary);
     }
 
     /// <summary>16px E「双线」标记的放大版：上直线 + 下垂弧线 + 暖橙夹点。</summary>
@@ -1110,6 +1607,18 @@ internal sealed unsafe class RopeCanvas : IDisposable
     /// 用 GDI TextOutW + ANTIALIASED_QUALITY 生成灰度文字蒙版。
     /// GDI 写 32bpp DIB 时 alpha 恒为 0，必须单独出蒙版再按覆盖率合成。
     /// </summary>
+    /// <summary>
+    /// P2-4：按内容选字面。纯 ASCII 走 Segoe UI（Win11 的西文 UI 字体），
+    /// 含中文走 Microsoft YaHei UI（雅黑 UI 变体，字距比旧 YaHei 紧、更像系统界面）。
+    /// GDI 的 ANTIALIASED_QUALITY 是灰度抗锯齿，透明蒙版只能这么做（ClearType 会带彩边）。
+    /// </summary>
+    private static string FaceFor(string text)
+    {
+        foreach (char ch in text)
+            if (ch > 0x2E80) return "Microsoft YaHei UI";
+        return "Segoe UI";
+    }
+
     internal static byte[]? BuildTextMask(string text, int fontH, int weight,
         out int width, out int height)
     {
@@ -1145,7 +1654,7 @@ internal sealed unsafe class RopeCanvas : IDisposable
             new Span<uint>((void*)bits, bw * bh).Clear();
 
             font = ShellNative.CreateFontW(-fontH, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 4, 0,
-                "Microsoft YaHei");
+                FaceFor(text));
             if (font == IntPtr.Zero) return null;
             oldFont = ShellNative.SelectObject(dc, font);
             ShellNative.SetBkMode(dc, 1);
@@ -1209,6 +1718,64 @@ internal sealed unsafe class RopeCanvas : IDisposable
         if (_screenDc != IntPtr.Zero) ShellNative.ReleaseDC(IntPtr.Zero, _screenDc);
         _bits = null;
     }
+}
+
+/// <summary>快捷键录制器上的可交互元素（P1-5）。</summary>
+internal enum ShortcutHover
+{
+    None,
+    Close,
+    Primary,
+    Secondary,
+}
+
+/// <summary>录制器一帧内容：当前值 + 刚按下但尚未生效的组合 + 一行结果说明。</summary>
+internal sealed record ShortcutView(
+    string Current,
+    string? Candidate,
+    string Message,
+    ShortcutHover Hover = ShortcutHover.None,
+    bool Pressed = false);
+
+internal sealed class ShortcutLayout
+{
+    public (int X, int Y, int W, int H) Close;
+    public (int X, int Y, int W, int H) Primary;
+    public (int X, int Y, int W, int H) Secondary;
+
+    public void Reset() => Close = Primary = Secondary = default;
+}
+
+/// <summary>更新面板上的可交互元素。</summary>
+internal enum UpdateHover
+{
+    None,
+    Close,
+    Primary,
+    Secondary,
+}
+
+/// <summary>更新面板的一帧内容；由壳层从 UpdateSnapshot 映射，绘制层不依赖应用层。</summary>
+internal sealed record UpdateView(
+    string Current,
+    string Available,
+    string Channel,
+    string Message,
+    int Progress,
+    bool Indeterminate,
+    string PrimaryLabel,
+    string SecondaryLabel,
+    bool PrimaryWide = false,
+    UpdateHover Hover = UpdateHover.None,
+    bool Pressed = false);
+
+internal sealed class UpdateLayout
+{
+    public (int X, int Y, int W, int H) Close;
+    public (int X, int Y, int W, int H) Primary;
+    public (int X, int Y, int W, int H) Secondary;
+
+    public void Reset() => Close = Primary = Secondary = default;
 }
 
 /// <summary>

@@ -52,6 +52,7 @@ internal sealed class FallWindow : IDisposable
             _canvas = new RopeCanvas(widthPx, heightPx, _scale);
         }
 
+        _canvas.Theme = ThemePalette.Current;
         _canvas.RenderFall(falls);
         if (!_canvas.Present(_hwnd)) return false;
         ShellNative.ShowWindow(_hwnd, ShellNative.SW_SHOWNOACTIVATE);

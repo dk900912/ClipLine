@@ -140,6 +140,23 @@ public static class ShellSmoke
             Check("空白区恢复穿透", host.Rope.IsPassthrough, "");
             IntPtr blank = ShellNative.WindowFromPoint(new ShellNative.POINT(10, 5));
             Check("空白区穿透到下层", blank != host.Rope.Handle, $"返回 0x{blank.ToInt64():X}");
+
+            // ①c P0-6：托盘/热键唤出后绳子可聚焦，焦点框必须真的改变画面，
+            // 失焦后恢复 NOACTIVATE 并撤掉焦点框（键盘可达不是纸面承诺）。
+            string focusBefore = Path.Combine(tempRoot, "rope-focus-before.png");
+            string focusAfter = Path.Combine(tempRoot, "rope-focus-after.png");
+            host.Rope.DumpFrame(focusBefore);
+            host.Rope.FocusForKeyboard();
+            bool focused = host.Rope.KeyboardFocused && host.Rope.FocusIndex == 0;
+            host.Rope.DumpFrame(focusAfter);
+            // 同一帧的 1:1 局部放大：焦点框与夹子的细节证据（供人工目检）。
+            host.Rope.DumpFrame(Path.Combine(tempRoot, "focus-zoom.png"), 800, 0, 320, 170);
+            bool ringDrawn = File.Exists(focusBefore) && File.Exists(focusAfter)
+                && !File.ReadAllBytes(focusBefore).SequenceEqual(File.ReadAllBytes(focusAfter));
+            host.Rope.ReleaseKeyboard();
+            bool released = !host.Rope.KeyboardFocused && host.Rope.FocusIndex == -1;
+            Check("键盘可达：可聚焦、焦点框可见、失焦复原", focused && ringDrawn && released,
+                $"焦点={focused} 焦点框={ringDrawn} 释放={released}");
         }
 
         // 指针离开 → peek(2500) 过期 → 欢迎窗 pin(5000) 解除 → 收起 → 0.3 s 后销毁。
@@ -433,9 +450,10 @@ public static class ShellSmoke
             bool noticeShown = notice is not null && notice.Show(noticeTitle, noticeText, n0);
             notice?.Tick(n0 + 200);
             bool fadeIn = notice?.LastAlpha == 255;
-            notice?.Tick(n0 + 3350);
+            // P1-13：停留从 3.2 s 提到 6 s（够读完两行说明），淡出仍在 250 ms 内完成。
+            notice?.Tick(n0 + 6150);
             bool fadeOut = notice is not null && notice.LastAlpha < 255;
-            notice?.Tick(n0 + 3500);
+            notice?.Tick(n0 + 6300);
             bool noticeHidden = notice is not null && !notice.IsVisible;
             int expectedW = (int)Math.Round(NoticeWindow.WidthDip * (notice?.Scale ?? 1));
             int expectedH = (int)Math.Round(NoticeWindow.HeightDip * (notice?.Scale ?? 1));

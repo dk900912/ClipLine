@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using ClipLine.Application;
 
@@ -18,6 +19,9 @@ public sealed class ShellTray : IDisposable
 
     private IntPtr _host;
     private NoticeWindow? _notice;
+    private readonly Queue<(string Title, string Text)> _pendingNotices = new();
+    private bool _noticeActive;
+    private long _lastLeftClickMs;
     private IntPtr _iconDefault;
     private IntPtr _iconActive;
     private IntPtr _iconIdle;
@@ -33,10 +37,16 @@ public sealed class ShellTray : IDisposable
     /// <summary>系统剪贴板内容变化（AddClipboardFormatListener）。</summary>
     public event Action? ClipboardUpdated;
 
-    /// <summary>全局快捷键 Ctrl+Alt+T。</summary>
-    public event Action? HotKeyPressed;
+    /// <summary>全局快捷键。参数是注册时的 id：1=晾衣绳开关，2=退出。</summary>
+    public event Action<int>? HotKeyPressed;
 
     public event Action? SessionEnding;
+
+    /// <summary>
+    /// 系统外观变化（深色 / 浅色 / 高对比度）。托盘宿主是 message-only 窗口，
+    /// 所有自绘窗口共用这一个广播源，避免每个窗口各挂一套监听。
+    /// </summary>
+    public event Action? ThemeChanged;
 
     public IntPtr HostHandle => _host;
     public bool IsAdded { get; private set; }
@@ -117,8 +127,20 @@ public sealed class ShellTray : IDisposable
         {
             uint mouseMsg = (uint)lParam.ToInt64() & 0xFFFF;
             if (mouseMsg == ShellNative.WM_RBUTTONUP) self?.MenuRequested?.Invoke();
-            else if (mouseMsg == ShellNative.WM_LBUTTONUP || mouseMsg == ShellNative.WM_LBUTTONDBLCLK)
-                self?.LeftClicked?.Invoke();
+            else if (mouseMsg == ShellNative.WM_LBUTTONUP)
+            {
+                // 双击会先来一次 UP、再来 DBLCLK、最后又一次 UP。旧实现三路都接
+                // LeftClicked，双击=三次 toggle（闪回原状）。这里只认第一次 UP，
+                // 双击时间窗内的第二次 UP 直接吞掉。
+                long now = Environment.TickCount64;
+                if (self is not null && now - self._lastLeftClickMs > ShellNative.GetDoubleClickTime())
+                    self.LeftClicked?.Invoke();
+                if (self is not null) self._lastLeftClickMs = now;
+            }
+            else if (mouseMsg == ShellNative.WM_LBUTTONDBLCLK)
+            {
+                // 双击语义交给第一次单击（显示/收起），这里不再重复触发。
+            }
             return IntPtr.Zero;
         }
         switch (msg)
@@ -126,16 +148,29 @@ public sealed class ShellTray : IDisposable
             case ShellNative.WM_TIMER:
                 if (wParam.ToUInt64() == NoticeTimerId.ToUInt64() && self is not null)
                 {
-                    // 通知结束后立刻停表，空闲时没有任何定时器或重绘。
+                    // 通知结束后停表并出队下一条；空闲时没有任何定时器或重绘。
                     if (self._notice is null || !self._notice.Tick(Environment.TickCount64))
+                    {
                         ShellNative.KillTimer(hWnd, NoticeTimerId);
+                        self._noticeActive = false;
+                        self.PumpNotices();
+                    }
                 }
                 return IntPtr.Zero;
             case ShellNative.WM_CLIPBOARDUPDATE:
                 self?.ClipboardUpdated?.Invoke();
                 return IntPtr.Zero;
             case ShellNative.WM_HOTKEY:
-                self?.HotKeyPressed?.Invoke();
+                self?.HotKeyPressed?.Invoke((int)wParam.ToUInt64());
+                return IntPtr.Zero;
+            case ShellNative.WM_SETTINGCHANGE:
+                // lParam 为 "ImmersiveColorSet" 时是深浅色切换；wParam 为
+                // SPI_SETHIGHCONTRAST 时是高对比度开关；其余系统设置变化
+                // 也一并重读一次色板（Refresh 未变化就不会触发重绘）。
+                self?.ThemeChanged?.Invoke();
+                return new IntPtr(0);
+            case ShellNative.WM_THEMECHANGED:
+                self?.ThemeChanged?.Invoke();
                 return IntPtr.Zero;
             case ShellNative.WM_QUERYENDSESSION:
             case ShellNative.WM_ENDSESSION:
@@ -155,13 +190,52 @@ public sealed class ShellTray : IDisposable
     public void ShowBalloon(string title, string text)
     {
         if (!IsAdded) return;
+        if (SuppressNotifications()) return; // 勿扰 / 演示 / 全屏游戏
+        if (_noticeActive)
+        {
+            // 不覆盖上一条：最多排队 4 条，按顺序播放（P1-13）。
+            if (_pendingNotices.Count < 4) _pendingNotices.Enqueue((title, text));
+            return;
+        }
+        ShowNoticeNow(title, text);
+    }
+
+    private void ShowNoticeNow(string title, string text)
+    {
         _notice ??= new NoticeWindow(ShellNative.GetDpiForSystem() / 96.0);
+        _notice.Dismissed -= OnNoticeDismissed;
+        _notice.Dismissed += OnNoticeDismissed;
         if (!_notice.Show(title, text, Environment.TickCount64)) return;
+        _noticeActive = true;
         if (ShellNative.SetTimer(_host, NoticeTimerId, 33, IntPtr.Zero) == UIntPtr.Zero)
         {
             // 定时器极少数情况创建失败：至少显示一帧完整内容，不静默丢掉通知。
             _notice.Tick(Environment.TickCount64 + 200);
         }
+    }
+
+    private void OnNoticeDismissed()
+    {
+        _notice?.Hide();
+        _noticeActive = false;
+        ShellNative.KillTimer(_host, NoticeTimerId);
+        PumpNotices();
+    }
+
+    private void PumpNotices()
+    {
+        if (_pendingNotices.Count == 0) return;
+        (string title, string text) = _pendingNotices.Dequeue();
+        ShowNoticeNow(title, text);
+    }
+
+    private static bool SuppressNotifications()
+    {
+        if (ShellNative.SHQueryUserNotificationState(out ShellNative.QUERY_USER_NOTIFICATION_STATE state) != 0)
+            return false;
+        return state is ShellNative.QUERY_USER_NOTIFICATION_STATE.QuietTime
+            or ShellNative.QUERY_USER_NOTIFICATION_STATE.PresentationMode
+            or ShellNative.QUERY_USER_NOTIFICATION_STATE.RunningD3dFullScreen;
     }
 
     /// <summary>冒烟用：直接拿到自绘通知窗做确定性断言，不依赖消息循环。</summary>
@@ -228,6 +302,7 @@ public sealed class ShellTray : IDisposable
     public void Dispose()
     {
         ShellNative.KillTimer(_host, NoticeTimerId);
+        _pendingNotices.Clear();
         _notice?.Dispose();
         _notice = null;
         if (IsAdded)
