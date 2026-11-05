@@ -86,13 +86,18 @@ internal static class Win32Native
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ReadDirectoryChangesW(
-        IntPtr hDirectory, byte[] lpBuffer, uint nBufferLength,
+        IntPtr hDirectory, [Out] byte[] lpBuffer, uint nBufferLength,
         [MarshalAs(UnmanagedType.Bool)] bool bWatchSubtree, uint dwNotifyFilter,
-        out uint lpBytesReturned, ref OVERLAPPED lpOverlapped, IntPtr lpCompletionRoutine);
+        out uint lpBytesReturned, IntPtr lpOverlapped, IntPtr lpCompletionRoutine);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool CloseHandle(IntPtr hObject);
+
+    /// <summary>取消句柄上所有挂起的 I/O；用于让同步阻塞的 ReadDirectoryChangesW 立即返回。</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CancelIoEx(IntPtr hFile, IntPtr lpOverlapped);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

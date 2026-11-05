@@ -12,7 +12,9 @@ if (-not (Test-Path $exe)) {
 }
 
 $result = Join-Path $env:TEMP 'clipline-smoke\smoke-result.txt'
-Remove-Item $result -ErrorAction SilentlyContinue
+$startedAt = (Get-Date).AddSeconds(-2)
+# Do not delete the previous report: some environments guard Remove-Item.
+# Freshness is checked by LastWriteTime instead.
 
 Push-Location (Split-Path $exe)
 try {
@@ -21,10 +23,10 @@ try {
 }
 finally { Pop-Location }
 
-if (Test-Path $result) {
+if ((Test-Path $result) -and ((Get-Item $result).LastWriteTime -ge $startedAt)) {
     Get-Content -Raw -Encoding UTF8 $result
 } else {
-    "No result file produced; process exit code $code"
+    "No fresh result file produced; process exit code $code"
 }
 "ExitCode=$code"
 exit $code

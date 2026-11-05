@@ -18,6 +18,12 @@ public sealed class PlatformCommandSink : ICommandSink
 
     public IntPtr HostWindow => _trayHost.Handle;
 
+    /// <summary>可注入的状态文件路径：冒烟/测试用它隔离真实用户状态。</summary>
+    public string StateFilePath { get; }
+
+    public PlatformCommandSink(string? statePath = null) =>
+        StateFilePath = statePath ?? StatePath;
+
     public static string OwnDirectory => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipLine", "Screenshots");
 
@@ -74,7 +80,7 @@ public sealed class PlatformCommandSink : ICommandSink
                 break;
 
             case CommandKind.PersistState:
-                WriteAtomic(StatePath, argument);
+                WriteAtomic(StateFilePath, argument);
                 break;
 
             case CommandKind.OpenFolder:

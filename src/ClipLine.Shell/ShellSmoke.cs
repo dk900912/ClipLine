@@ -20,11 +20,24 @@ public static class CursorReader
 public static class ShellSmoke
 {
     private static readonly List<(string Name, bool Pass, string Detail)> Checks = new();
+    private static readonly string ProgressPath =
+        Path.Combine(Path.GetTempPath(), "clipline-smoke", "progress.log");
+
+    internal static void Progress(string step)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ProgressPath)!);
+            File.AppendAllText(ProgressPath, step + Environment.NewLine);
+        }
+        catch { /* 诊断不阻断冒烟 */ }
+    }
 
     private static void Check(string name, bool pass, string detail = "") => Checks.Add((name, pass, detail));
 
     public static int Run()
     {
+        Progress("run entered");
         // WinExe 无控制台：附加到父进程控制台；同时写结果文件兜底。
         ShellNative.AttachConsole(ShellNative.AttachParentProcess);
         try
@@ -39,10 +52,13 @@ public static class ShellSmoke
 
         try
         {
+            Progress("run checks entered");
             RunChecks(tempRoot);
+            Progress("run checks returned");
         }
         catch (Exception ex)
         {
+            Progress("run checks threw: " + ex);
             Check("冒烟运行无异常", false, ex.GetType().Name + ": " + ex.Message);
         }
 
@@ -71,13 +87,13 @@ public static class ShellSmoke
 
         var clock = new FakeClock();
         var env = new ShellEnvironment(ShellNative.GetDpiForSystem() / 96.0, ownDir, picturesDir);
-        using var host = new ShellAppHost(clock, env);
+        var host = new ShellAppHost(clock, env, Path.Combine(tempRoot, "state.json"));
         host.Start();
         Check("托盘图标（E 双线，message-only 宿主）", host.TrayAdded, $"host=0x{host.Tray.HostHandle.ToInt64():X}");
 
-        // 真实存在的最小合法 PNG（含 IEND），走正式捕获路径
+        // 彩色测试图：让导出的渲染帧能直观证明真实缩略图解码链路。
         string demoPath = Path.Combine(ownDir, "demo.png");
-        File.WriteAllBytes(demoPath, MinimalPng());
+        GdiPlus.SaveBgraAsPng(ColorfulDemo(240, 160), 240, 160, demoPath);
 
         clock.NowMs = 0;
         host.Facade.Handle(new NewItem(demoPath));
@@ -94,6 +110,12 @@ public static class ShellSmoke
             $"exStyle=0x{exStyle:X}");
 
         Check("卡片占位已按状态渲染", host.Rope.CardRects.Count >= 1, $"{host.Rope.CardRects.Count} 张");
+
+        string framePath = Path.Combine(tempRoot, "frame.png");
+        bool dumped = host.Rope.DumpFrame(framePath);
+        long frameBytes = File.Exists(framePath) ? new FileInfo(framePath).Length : 0;
+        Check("渲染帧可导出为 PNG（真实缩略图证据）", dumped && frameBytes > 1000,
+            $"{framePath} ({frameBytes} B)");
 
         if (host.Rope.CardRects.Count > 0)
         {
@@ -136,8 +158,38 @@ public static class ShellSmoke
         }, IntPtr.Zero);
         Check("EnumWindows 无残留绳窗口", !leftover, "");
         Check("托盘与瞬时线窗口解耦", host.TrayAdded && host.Tray.HostHandle != IntPtr.Zero, "");
+        Progress("before menu selftest");
+        (bool menuPass, string menuDetail) = RealInputBridge.SelfTest();
+        Progress("after menu selftest");
+        Check("托盘 16 项 Win32 菜单结构自检", menuPass, menuDetail);
         Check("平台命令接收器无异常", host.SinkErrors.Count == 0,
             host.SinkErrors.Count == 0 ? "" : string.Join("；", host.SinkErrors));
+        Progress("checks done, disposing host");
+        host.Dispose();
+        Progress("host disposed");
+    }
+
+    /// <summary>左橙 / 右上蓝 / 右下白的可辨识 BGRA 测试图。</summary>
+    private static byte[] ColorfulDemo(int width, int height)
+    {
+        byte[] pixels = new byte[width * height * 4];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                bool left = x < width / 2;
+                bool upper = y < height / 2;
+                int r = left ? 239 : upper ? 108 : 255;
+                int g = left ? 138 : upper ? 99 : 255;
+                int b = left ? 36 : upper ? 244 : 255;
+                int i = (y * width + x) * 4;
+                pixels[i] = (byte)b;
+                pixels[i + 1] = (byte)g;
+                pixels[i + 2] = (byte)r;
+                pixels[i + 3] = 255;
+            }
+        }
+        return pixels;
     }
 
     /// <summary>1×1 透明 PNG，含完整 IEND。</summary>

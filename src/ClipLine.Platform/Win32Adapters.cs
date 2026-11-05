@@ -44,7 +44,8 @@ public enum FolderChange
 
 /// <summary>
 /// F-05：ReadDirectoryChangesW + 0.2 秒防抖。
-/// 正式实现应把句柄挂到 I/O 完成端口；此处保留同步读取循环，接口与解析规则与产品一致。
+/// v1 用同步阻塞读取（句柄不带 FILE_FLAG_OVERLAPPED）：后台线程零轮询地等事件，
+/// 关闭句柄即可让阻塞调用返回。解析规则与产品一致，Parse 是纯函数可单测。
 /// </summary>
 public sealed class FolderWatcher : IDisposable
 {
@@ -98,7 +99,7 @@ public sealed class FolderWatcher : IDisposable
             Win32Native.FILE_SHARE_READ | Win32Native.FILE_SHARE_WRITE | Win32Native.FILE_SHARE_DELETE,
             IntPtr.Zero,
             Win32Native.OPEN_EXISTING,
-            Win32Native.FILE_FLAG_BACKUP_SEMANTICS | Win32Native.FILE_FLAG_OVERLAPPED,
+            Win32Native.FILE_FLAG_BACKUP_SEMANTICS,
             IntPtr.Zero);
         if (_handle == IntPtr.Zero || _handle == Win32Native.INVALID_HANDLE_VALUE)
             throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法监视目录：{path}");
@@ -112,13 +113,12 @@ public sealed class FolderWatcher : IDisposable
         byte[] buffer = new byte[BufferSize];
         while (!token.IsCancellationRequested)
         {
-            var overlapped = default(Win32Native.OVERLAPPED);
             uint notifyFilter = Win32Native.FILE_NOTIFY_CHANGE_FILE_NAME |
                                 Win32Native.FILE_NOTIFY_CHANGE_LAST_WRITE |
                                 Win32Native.FILE_NOTIFY_CHANGE_CREATION;
             if (!Win32Native.ReadDirectoryChangesW(
                     _handle, buffer, (uint)buffer.Length, false, notifyFilter,
-                    out uint returned, ref overlapped, IntPtr.Zero)) break;
+                    out uint returned, IntPtr.Zero, IntPtr.Zero)) break;
             if (returned == 0) continue;
 
             long now = Environment.TickCount64;
@@ -135,10 +135,20 @@ public sealed class FolderWatcher : IDisposable
     public void Stop()
     {
         _cts?.Cancel();
-        if (_handle != IntPtr.Zero && _handle != Win32Native.INVALID_HANDLE_VALUE)
+        IntPtr handle = _handle;
+        if (handle != IntPtr.Zero && handle != Win32Native.INVALID_HANDLE_VALUE)
         {
-            Win32Native.CloseHandle(_handle);
+            // 同步 ReadDirectoryChangesW 正阻塞在后台线程；直接 CloseHandle 会
+            // 等挂起 I/O 完成而死锁（冒烟退出时实测）。先取消 I/O，再关句柄。
             _handle = IntPtr.Zero;
+            Win32Native.CancelIoEx(handle, IntPtr.Zero);
+            Task? pump = _pump;
+            if (pump is not null)
+            {
+                try { pump.Wait(TimeSpan.FromMilliseconds(500)); }
+                catch (AggregateException) { /* 取消导致的任务异常无需上抛 */ }
+            }
+            Win32Native.CloseHandle(handle);
         }
         _pump = null;
         _cts?.Dispose();

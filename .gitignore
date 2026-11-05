@@ -10,6 +10,9 @@ obj/
 *.userosscache
 *.sln.docstates
 
+# 发布产物（由 tools/build-msix.ps1 生成，不入库）
+dist/
+
 # MSIX / 打包产物
 AppPackages/
 BundleArtifacts/

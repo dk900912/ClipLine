@@ -43,6 +43,7 @@ internal static class ShellNative
     internal const uint NIF_MESSAGE = 0x00000001;
     internal const uint NIF_ICON = 0x00000002;
     internal const uint NIF_TIP = 0x00000004;
+    internal const uint NIF_INFO = 0x00000010;
 
     internal const int SM_CXSCREEN = 0;
     internal const uint SPI_GETCLIENTAREAANIMATION = 0x1042;
@@ -260,4 +261,125 @@ internal static class ShellNative
     internal static extern bool AttachConsole(uint dwProcessId);
 
     internal const uint AttachParentProcess = 0xFFFFFFFF;
+
+    // ============================================================
+    // v1 真实输入链路：鼠标 / 剪贴板 / 托盘菜单 / 热键
+    // ============================================================
+
+    internal const uint WM_MOUSEMOVE = 0x0200;
+    internal const uint WM_LBUTTONDOWN = 0x0201;
+    internal const uint WM_LBUTTONDBLCLK = 0x0203;
+    internal const uint WM_RBUTTONDOWN = 0x0204;
+    internal const uint WM_MOUSEWHEEL = 0x020A;
+    internal const uint WM_CLIPBOARDUPDATE = 0x031D;
+    internal const uint WM_HOTKEY = 0x0312;
+    internal const uint WM_COMMAND = 0x0111;
+    internal const uint WM_ENDSESSION = 0x0016;
+    internal const uint WM_QUERYENDSESSION = 0x0011;
+    internal const uint WM_USER_TRAY = WM_APP + 1;
+
+    internal const uint CF_BITMAP = 2;
+    internal const uint CF_DIB = 8;
+    internal const uint CF_HDROP = 15;
+
+    internal const uint MF_STRING = 0x00000000;
+    internal const uint MF_GRAYED = 0x00000001;
+    internal const uint MF_DISABLED = 0x00000002;
+    internal const uint MF_SEPARATOR = 0x00000800;
+    internal const uint MF_POPUP = 0x00000010;
+    internal const uint MF_CHECKED = 0x00000008;
+
+    internal const uint TPM_RETURNCMD = 0x0100;
+    internal const uint TPM_RIGHTBUTTON = 0x0002;
+    internal const uint TPM_NONOTIFY = 0x0080;
+    internal const uint TPM_LEFTALIGN = 0x0000;
+
+    internal const uint MOD_ALT = 0x0001;
+    internal const uint MOD_CONTROL = 0x0002;
+    internal const uint MOD_SHIFT = 0x0004;
+    internal const uint MOD_NOREPEAT = 0x4000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AddClipboardFormatListener(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr GetClipboardData(uint uFormat);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GlobalUnlock(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr CreatePopupMenu();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DestroyMenu(IntPtr hMenu);
+
+    [DllImport("user32.dll", EntryPoint = "AppendMenuW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AppendMenuW(IntPtr hMenu, uint uFlags, IntPtr uIDNewItem, string? lpNewItem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int GetMenuItemCount(IntPtr hMenu);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y,
+        IntPtr hwnd, IntPtr lptpm);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool MessageBeep(uint uType);
+
+    [DllImport("shell32.dll", EntryPoint = "ShellExecuteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr ShellExecuteW(IntPtr hwnd, string lpOperation, string lpFile,
+        string? lpParameters, string? lpDirectory, int nShowCmd);
+
+    internal const int SwShowNormal = 1;
+    internal const uint MbOk = 0;
 }

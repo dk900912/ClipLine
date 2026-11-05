@@ -3,9 +3,10 @@ using ClipLine.Domain;
 namespace ClipLine.Shell;
 
 /// <summary>
-/// 渲染壳 v0 的 32bpp 预乘 alpha DIB 画布（P0 切片验证过的 GDI 路径）。
-/// 卡片为占位示意：真实缩略图解码与 Win2D 升级见 Issue #9 与 docs/06。
+/// v1 的 32bpp 预乘 alpha DIB 画布（P0 切片验证过的 GDI 路径）。
+/// 卡片内容用系统 GDI+ 解码真实截图并按等比 contain 绘制；解码失败回退到渐变占位。
 /// 几何常量全部来自 <see cref="Layout"/>，不另起一套参数。
+/// Win2D / DirectComposition 升级仍属后续迭代，见 docs/08。
 /// </summary>
 internal sealed unsafe class RopeCanvas : IDisposable
 {
@@ -20,6 +21,7 @@ internal sealed unsafe class RopeCanvas : IDisposable
     private bool _disposed;
 
     private readonly List<(int X, int Y, int W, int H)> _cardRects = new();
+    private readonly ThumbnailCache _thumbs = new();
 
     internal int WidthPx => _widthPx;
     internal int HeightPx => _heightPx;
@@ -54,13 +56,13 @@ internal sealed unsafe class RopeCanvas : IDisposable
 
     private int Px(double dip) => (int)Math.Round(dip * _scale);
 
-    /// <summary>按状态快照渲染：绳 + 可见卡片占位。卡片居中排布，间距来自 Layout.Spacing。</summary>
-    internal void Render(StateSnapshotView view)
+    /// <summary>按状态帧渲染：绳 + 可见卡片的真实缩略图。卡片居中排布，间距来自 Layout.Spacing。</summary>
+    internal void Render(RopeFrame frame)
     {
         new Span<uint>(_bits, _widthPx * _heightPx).Clear();
         _cardRects.Clear();
         DrawRope();
-        DrawCards(view);
+        DrawCards(frame);
     }
 
     private void DrawRope()
@@ -77,12 +79,12 @@ internal sealed unsafe class RopeCanvas : IDisposable
         }
     }
 
-    private void DrawCards(StateSnapshotView view)
+    private void DrawCards(RopeFrame frame)
     {
-        int cardW = Px(Layout.CardWidth(view.Size));
-        int cardH = Px(Layout.PhotoMaxHeight(view.Size));
-        int spacing = Px(Layout.Spacing(view.Size));
-        int count = Math.Min(view.VisibleItemCount, view.VisibleCount);
+        int cardW = Px(Layout.CardWidth(frame.Size));
+        int cardH = Px(Layout.PhotoMaxHeight(frame.Size));
+        int spacing = Px(Layout.Spacing(frame.Size));
+        int count = Math.Min(frame.VisibleItemCount, frame.VisibleCount);
         if (count <= 0) return;
 
         int totalW = spacing * (count - 1) + cardW;
@@ -92,11 +94,12 @@ internal sealed unsafe class RopeCanvas : IDisposable
             int x = left + i * spacing;
             int y = (int)(Layout.RopeY((x + cardW / 2.0) / _scale, _widthPx / _scale) * _scale) + Px(12);
             _cardRects.Add((x, y, cardW, cardH));
-            DrawCard(x, y, cardW, cardH, i < view.KeptCount);
+            CardVisual? card = i < frame.Cards.Count ? frame.Cards[i] : null;
+            DrawCard(x, y, cardW, cardH, card?.Kept ?? i < frame.KeptCount, card?.Path);
         }
     }
 
-    private void DrawCard(int x, int y, int w, int h, bool kept)
+    private void DrawCard(int x, int y, int w, int h, bool kept, string? path)
     {
         int radius = Px(16);
         FillRoundRect(x + 2, y + 5, w, h, radius, 0, 0, 0, 46);
@@ -115,6 +118,34 @@ internal sealed unsafe class RopeCanvas : IDisposable
                 int cy = Math.Clamp(yy, py + innerRadius, py + ph - 1 - innerRadius);
                 int dx = xx - cx, dy = yy - cy;
                 if (dx * dx + dy * dy <= innerRadius * innerRadius) Put(xx, yy, r, g, b, 255);
+            }
+        }
+
+        // 真实截图：GDI+ 等比 contain 解码后的 BGRA 覆盖到照片内区，沿用同一套圆角裁剪。
+        if (!string.IsNullOrEmpty(path))
+        {
+            byte[]? pixels = _thumbs.Get(path, pw, ph);
+            if (pixels is not null && pixels.Length >= pw * ph * 4)
+            {
+                int maxX = Math.Max(innerRadius, pw - 1 - innerRadius);
+                int maxY = Math.Max(innerRadius, ph - 1 - innerRadius);
+                for (int yy = 0; yy < ph; yy++)
+                {
+                    int cy = Math.Clamp(yy, innerRadius, maxY);
+                    int dy = yy - cy;
+                    for (int xx = 0; xx < pw; xx++)
+                    {
+                        int src = (yy * pw + xx) * 4;
+                        int alpha = pixels[src + 3];
+                        if (alpha == 0) continue;
+                        int cx = Math.Clamp(xx, innerRadius, maxX);
+                        int dx = xx - cx;
+                        if (dx * dx + dy * dy > innerRadius * innerRadius) continue;
+                        // GDI+ LockBits(32bppARGB) 在本机返回 RGBA 字节序；
+                        // 早期按 BGRA 解读会让橙/蓝互换（e2e 截图实测）。
+                        Put(px + xx, py + yy, pixels[src], pixels[src + 1], pixels[src + 2], alpha);
+                    }
+                }
             }
         }
 
@@ -183,6 +214,10 @@ internal sealed unsafe class RopeCanvas : IDisposable
             | Math.Min(sr + dr * inverse / 255, 255u);
     }
 
+    /// <summary>把当前帧导出成 PNG，供冒烟/验证作为确定性渲染证据。</summary>
+    internal bool SavePng(string path) =>
+        GdiPlus.SavePremultipliedFrame((IntPtr)_bits, _widthPx, _heightPx, path);
+
     internal bool Present(IntPtr hWnd)
     {
         var dst = new ShellNative.POINT(0, 0);
@@ -211,5 +246,17 @@ internal sealed unsafe class RopeCanvas : IDisposable
     }
 }
 
-/// <summary>画布需要的最小状态视图，避免壳层反向依赖门面快照的全部字段。</summary>
-public readonly record struct StateSnapshotView(CardSize Size, int VisibleCount, int VisibleItemCount, int KeptCount);
+/// <summary>一张可见卡片的最小渲染信息。</summary>
+public sealed record CardVisual(Guid Id, string Path, bool Kept);
+
+/// <summary>
+/// 画布需要的状态帧，避免壳层反向依赖门面快照的全部字段。
+/// Signature 是内容指纹：渲染壳按帧比对，只有内容变化才重建 DIB（不会因引用变化每帧重绘）。
+/// </summary>
+public sealed record RopeFrame(
+    CardSize Size,
+    int VisibleCount,
+    int VisibleItemCount,
+    int KeptCount,
+    IReadOnlyList<CardVisual> Cards,
+    string Signature);

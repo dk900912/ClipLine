@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  ClipLine MSIX 骨架（框架依赖 Windows App SDK）。
-  这是清单草稿，尚未生成实际包：需要正式 WinUI 3 / Windows App SDK 工作负载、
-  E 定稿 Logo 的多分辨率图标与 Authenticode 证书。详见 packaging/README.md。
+  ClipLine v1.0.0 MSIX 清单（正式发布版）。
+  Publisher 必须与签名证书 Subject 完全一致；证书由 tools/build-msix.ps1 生成并导入
+  CurrentUser\TrustedPeople。应用为 runFullTrust 桌面应用，Windows App SDK 运行时
+  以 self-contained 方式随包分发，因此不声明框架包依赖。
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -20,7 +21,7 @@
   </Properties>
 
   <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22621.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>
@@ -33,7 +34,7 @@
   </Capabilities>
 
   <Applications>
-    <Application Id="ClipLine" Executable="ClipLine.App.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="ClipLine" Executable="ClipLine.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="ClipLine"
         Description="截图晾衣绳"
@@ -43,14 +44,12 @@
         <uap:DefaultTile Square71x71Logo="Assets\SmallTile.png" />
       </uap:VisualElements>
       <Extensions>
-        <!-- A-03：开机自启由系统管理，用户在设置里可关闭 -->
-        <desktop:Extension Category="windows.startupTask" Executable="ClipLine.App.exe" EntryPoint="Windows.FullTrustApplication">
+        <!-- A-03：开机自启由系统管理，用户可在系统设置里关闭 -->
+        <desktop:Extension Category="windows.startupTask" Executable="ClipLine.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="ClipLineStartup" Enabled="true" DisplayName="ClipLine" />
         </desktop:Extension>
-        <!-- N-06 / X-01：稀疏包 + IExplorerCommand 右键「挂到 ClipLine」 -->
-        <desktop:Extension Category="windows.fileExplorerClassicContextMenuHandler">
-          <desktop:FileExplorerClassicContextMenuHandler Clsid="00000000-0000-0000-0000-000000000000" />
-        </desktop:Extension>
+        <!-- N-06 / X-01：稀疏包 + IExplorerCommand 右键菜单留待 v1.1；
+             v1 不声明未实现的 COM CLSID，避免包校验失败与无效右键项 -->
       </Extensions>
     </Application>
   </Applications>

@@ -7,7 +7,8 @@ namespace ClipLine.AppHost;
 /// <summary>
 /// 应用宿主：OnLaunched 后组合 ShellAppHost（门面 + 绳窗口 + 托盘），
 /// 用 33ms DispatcherQueueTimer 把真实指针送进门面 —— 对应 P0 验证过的 30 fps 帧驱动。
-/// v0 不放任何 XAML 窗口；托盘菜单 / 预览窗等 WinUI 界面属后续迭代。
+/// v1 挂上真实输入桥（剪贴板 / 目录 / 托盘菜单 / 卡片鼠标 / 快捷键），
+/// 界面本体仍是自管分层 HWND + GDI DIB，预览/标注等交给系统默认应用。
 /// </summary>
 public sealed class App : Microsoft.UI.Xaml.Application
 {
@@ -35,7 +36,8 @@ public sealed class App : Microsoft.UI.Xaml.Application
 
         _host = new ShellAppHost();
         _host.Start();
-        _host.ExitRequested += () => Environment.Exit(0);
+        _host.StartRealTime();
+        _host.QuitRequested += Shutdown;
 
         _frameTimer = DispatcherQueue.GetForCurrentThread().CreateTimer();
         _frameTimer.Interval = TimeSpan.FromMilliseconds(33); // ≈ 30 fps，与 P0 切片一致
@@ -45,5 +47,13 @@ public sealed class App : Microsoft.UI.Xaml.Application
             _host.Tick(x, y);
         };
         _frameTimer.Start();
+    }
+
+    private void Shutdown()
+    {
+        _frameTimer?.Stop();
+        _host?.Dispose();
+        Microsoft.UI.Xaml.Application.Current?.Exit();
+        Environment.Exit(0);
     }
 }
