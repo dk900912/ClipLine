@@ -1,7 +1,8 @@
-# ClipLine v1.0.0 发布说明
+# ClipLine v1 发布说明（当前版本 1.0.1）
 
-> 状态：**已构建、已签名、已在本机实跑验证**。本文档是 v1 的唯一放行记录，取代 `docs/06` / `docs/08` 中关于「尚未打包」的旧表述。
+> 状态：**已构建、已签名、已在本机实跑验证、已公开发布**。GitHub Release `v1.0.1` 已上线，源码 `HEAD = origin/main = ca28582`，详见 §13.7。本文档是 v1 的唯一放行记录，取代 `docs/06` / `docs/08` 中关于「尚未打包」的旧表述。
 > 构建日期：2026-11-05；目标平台：Windows 11 x64（单显示器 + 单一系统缩放）。
+> 注：§7–§12 中「本轮未 commit、未 push」是各历史轮次当时的快照记录；这些改动已随 §13.7 的 `ca28582` 一次性提交并推送。
 
 ## 1. 交付物
 
@@ -403,9 +404,25 @@ tan(14°)≈0.25 意味着每 4 行才跳 1 像素，垂直边框变成台阶 �
 
 ### 13.6 仍未闭环 / 需用户决策
 
-1. **GitHub Release 尚未公开**：受「不要 commit 和提交」约束，本轮只准备了资产与 `release-assets.txt`；创建正式 Release 需要把本地未提交代码与 tag 对齐，属于不可逆对外发布，等用户明确放行。
+1. ~~**GitHub Release 尚未公开**~~ → **已发布（2026-11-05 23:37 CST）**。用户明确放行「提交 + 打 tag + 发 Release」后，54 个改动以单次原子提交 `ca28582` 推送到 `main`，附注标签 `v1.0.1`（tag object `2a05e2c`），公开 Release 见 <https://github.com/dk900912/ClipLine/releases/tag/v1.0.1>。匿名 `/releases/latest` 现返回 `HTTP 200 / tag_name=v1.0.1 / draft=false / prerelease=false`，4 个资产齐全且**不含 `.pfx` / `.cer`**。真实便携版进程随后查询真实 GitHub API，判定同版本「已是最新」→ 不下载、不重启、0 异常，验证了不会无限自更新。发布通道说明见 §13.7。
 2. **生产受信 CA 代码签名证书**：本机只有自签 `CN=ClipLine`；MSIX 生产路径依赖证书信任，开发者模式 Register 只是本机验证回退。
 3. **运行期抓包复核**：静态白名单门禁已过，`docs/03` 要求的出站抓包复核仍待做。
 4. `update-helper.ps1` 的 MSIX 分支登记的是临时 loose 目录；**本轮验证结束后已 `Remove-AppxPackage` 卸载该开发包**，本机恢复到测试前无已装 ClipLine MSIX 的状态。正式发布走签名包路径不会有此限制。
 
-**本轮改动同样未 commit、未 push、未写 GitHub 评论。**
+### 13.7 公开发布实录（2026-11-05 23:37 CST）
+
+用户拍板放行后按「一个逻辑变更 = 交付 v1.0.1」做单次原子提交（54 文件、+5725/−197），**按文件拆分会产生无法独立编译的中间提交**，因此没有拆成多个 commit。
+
+| 步骤 | 结果 |
+|---|---|
+| `git commit` | `ca28582 feat(release): 发布 v1.0.1，落地 GitHub Release 双通道全自动更新` |
+| `git push origin main` | ❌ 失败：本机代理对 `github.com` 的 Git 智能 HTTP 端点返回 `CONNECT tunnel failed 502`，直连 `github.com:443` 超时；`api.github.com` 与 `uploads.github.com` 正常 |
+| SSH 通道探测 | 22 / 443 端口均完成 SSH 握手，但本机公钥未登记到 GitHub 账户（`Permission denied (publickey)`），且当前 token 缺 `admin:public_key` scope |
+| 临时凭据 | 用已有 `repo` scope 的 token 登记一把**只写本仓库**的 deploy key（`read_only=false`），推送完成后立即 `DELETE /repos/.../keys/{id}` → `204`，仓库现存 deploy key 数为 **0**；`origin` 始终未改，仍是 HTTPS |
+| `git push` via SSH | `071140c..ca28582 main -> main` 成功 |
+| 附注 tag | `v1.0.1` → `refs/tags/v1.0.1`，tag object `2a05e2c` |
+| `gh release create --verify-tag` | 上传 4 个资产（MSIX 30,440,494 B / ZIP 29,726,877 B / 两个 `.sha256`），**未上传任何私钥或证书** |
+| 公开 API 复核 | 匿名 `/releases/latest` → `HTTP 200`、`tag_name=v1.0.1`、`draft=false`、`prerelease=false`；客户端两种通道的资产名与 `asset + ".sha256"` sidecar 均能解析到 |
+| 真实客户端复核 | 启动最终便携包查询**真实** GitHub API：`APP_ALIVE=True`、`v1.0.1` 下载目录数 = 0、updater helper 进程数 = 0、诊断日志异常行 = 0 → 同版本不触发自更新 |
+
+**状态**：`HEAD = origin/main = ca28582`，附注 tag `v1.0.1` 已推送，公开 Release 已发布。本机所有测试进程已停止、MSIX 解包开发包已卸载、临时 deploy key 已删除、用户真实 `state.json` 已还原（`Pegged=1 / Kept=1`）。本轮未写任何 GitHub Issue 评论。

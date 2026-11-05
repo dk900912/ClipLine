@@ -1,6 +1,7 @@
-# ClipLine 打包与分发（v1.5 / 1.0.1 已构建）
+# ClipLine 打包与分发（v1.5 / 1.0.1 已公开发布）
 
-> 状态：**已构建、已签名**。完整发布记录见 `docs/09-release-v1.md`。本目录只保留清单与图标规则。
+> 状态：**已构建、已签名、已公开发布**。GitHub Release `v1.0.1` 已上线（<https://github.com/dk900912/ClipLine/releases/tag/v1.0.1>），源码 `HEAD = origin/main = ca28582`，附注 tag `v1.0.1` 已推送。完整发布记录见 `docs/09-release-v1.md` §13.7。本目录只保留清单与图标规则。
+> **安全提示**：`dist/ClipLine.pfx` 是本地自签名**私钥**，`.gitignore` 已排除 `dist/`，发布 Release 时只上传 `.msix` / `.zip` 与两个 `.sha256`，**绝不上传 `.pfx` / `.cer`**。
 
 ## 构建
 
@@ -72,5 +73,5 @@ Add-AppxPackage -Path dist\ClipLine_1.0.1.0_x64.msix
 | 100/125/150/200% 缩放、深浅色、高对比度、减少动效矩阵 | ❌ 手工矩阵未跑完 |
 | 生产受信 CA 签名 + 时间戳 | ❌ 当前为本地自签名 |
 | 托盘「检查更新…」 | ✅ v1.5 已修成真实自动更新链路（`RunUpdateCheck` → 下载 → SHA-256 → 安装 → 重启），详见 `docs/09` §13 |
-| GitHub Release 正式发布 | ⏸ 资产与校验和已生成（`dist/release-assets.txt`）；受「不要 commit 和提交」约束，正式公开发布待用户放行 |
+| GitHub Release 正式发布 | ✅ `v1.0.1` 已公开发布，匿名 `/releases/latest` 返回 `HTTP 200`，4 个资产齐全且无私钥；真实客户端查询后判定同版本「已是最新」，不下载 / 不重启 / 0 异常 |
 | 运行期出站抓包复核 | ❌ 静态白名单门禁已过，抓包复核待做 |
