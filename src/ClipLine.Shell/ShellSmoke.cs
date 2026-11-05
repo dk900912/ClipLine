@@ -157,6 +157,22 @@ public static class ShellSmoke
             bool released = !host.Rope.KeyboardFocused && host.Rope.FocusIndex == -1;
             Check("键盘可达：可聚焦、焦点框可见、失焦复原", focused && ringDrawn && released,
                 $"焦点={focused} 焦点框={ringDrawn} 释放={released}");
+
+            // ①d P0-5：拖放载荷必须真的是资源管理器认的 CF_HDROP（UTF-16 + 双零结尾），
+            // 且「文件还在不在」要压过目标回报的 DROPEFFECT —— 这是卡片去留的唯一判据。
+            string payload = Path.Combine(tempRoot, "拖放样本.png");
+            File.WriteAllBytes(payload, Array.Empty<byte>());
+            var (wide, doubleNull, decoded) = DragDropBridge.InspectPayload(payload);
+            bool dropPayload = wide && doubleNull
+                && string.Equals(decoded, payload, StringComparison.Ordinal);
+            bool moved = DragDropBridge.Classify(2, false) == DragOutcome.Moved;
+            bool liedMove = DragDropBridge.Classify(2, true) == DragOutcome.Copied;
+            bool liedCopy = DragDropBridge.Classify(1, false) == DragOutcome.Moved;
+            bool cancelled = DragDropBridge.Classify(0, true) == DragOutcome.Cancelled;
+            Check("拖放：CF_HDROP 载荷正确、去留按磁盘判定",
+                dropPayload && moved && liedMove && liedCopy && cancelled,
+                $"宽字符={wide} 双零={doubleNull} 路径一致={decoded == payload} " +
+                $"移走={moved} 谎报MOVE={liedMove} 谎报COPY={liedCopy} 取消={cancelled}");
         }
 
         // 指针离开 → peek(2500) 过期 → 欢迎窗 pin(5000) 解除 → 收起 → 0.3 s 后销毁。

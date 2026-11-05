@@ -475,6 +475,9 @@ internal static class ShellNative
     internal const uint TmeLeave = 0x00000002;
     internal const uint TPM_WORKAREA = 0x10000;
     internal const int SmCxDoubleClk = 36;
+    // SM_CXDRAG / SM_CYDRAG：系统认定「已经开始拖动」的最小位移，拖放阈值必须与它一致。
+    internal const int SmCxDrag = 68;
+    internal const int SmCyDrag = 69;
     internal const int SmCyDoubleClk = 37;
 
     internal const int ColorWindow = 5;
@@ -530,7 +533,7 @@ internal static class ShellNative
     [DllImport("shell32.dll")]
     internal static extern int SHQueryUserNotificationState(out QUERY_USER_NOTIFICATION_STATE state);
 
-    [DllImport("user32.dll", EntryPoint = "GetTextExtentPoint32W", CharSet = CharSet.Unicode)]
+    [DllImport("gdi32.dll", EntryPoint = "GetTextExtentPoint32W", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetTextExtentPoint32W(IntPtr hdc, string lpString, int c,
         out SIZE psizl);
@@ -586,6 +589,18 @@ internal static class ShellNative
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetWindowTextW(IntPtr hWnd, string lpString);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowExW")]
+    internal static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string? className,
+        string? windowName);
+
+    [DllImport("user32.dll", EntryPoint = "GetClientRect")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetClientRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll", EntryPoint = "ScreenToClient")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ScreenToClient(IntPtr hWnd, ref POINT point);
 
     /// <summary>无障碍事件：窗口名变化后让 Narrator 重新朗读（P0-6）。</summary>
     [DllImport("user32.dll")]

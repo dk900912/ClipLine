@@ -90,6 +90,7 @@ public static class UiClickTest
             VerifyHeld();
             VerifyPin();
             VerifyCopy();
+            VerifyDragOut();
             VerifyUnpin();
             VerifyOpen();
         }
@@ -128,6 +129,22 @@ public static class UiClickTest
 
     private static void PrepareFixture()
     {
+        // 上一轮若在 OLE 拖放中途异常退出，系统会保留「左键仍按下」的输入状态，
+        // 之后所有右键菜单都会被当成「拖动中的第二次按键」而忽略。
+        // 夹具先补发一次抬起，把输入队列恢复到干净状态。
+        ShellNative.mouse_event(ShellNative.MouseeventfLeftup, 0, 0, 0, UIntPtr.Zero);
+        ShellNative.mouse_event(ShellNative.MouseeventfRightup, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(120);
+
+        // 标注草稿是「崩溃后可恢复」的兜底（P0-2），会按原图路径在下次打开时自动回填。
+        // 同一个夹具图片路径固定，上一轮遗留的草稿会让形状数凭空 +1，必须先清掉。
+        try
+        {
+            string draft = Path.Combine(Path.GetTempPath(), "ClipLine", "markup-draft.json");
+            if (File.Exists(draft)) File.Delete(draft);
+        }
+        catch { /* 草稿删不掉不影响后续步骤 */ }
+
         var paths = new List<string>();
         var palette = new (byte B, byte G, byte R)[]
         {
@@ -138,7 +155,9 @@ public static class UiClickTest
         for (int i = 0; i < palette.Length; i++)
         {
             string path = Path.Combine(s_root, $"uiclick-{i}.png");
-            MakePng(path, palette[i]);
+            // 第一张做双色斜条纹：马赛克这类「按像素」的效果在纯色图上根本看不出来，
+            // 而标注窗默认打开的就是第 0 张。
+            MakePng(path, palette[i], i == 0 ? palette[1] : null);
             paths.Add(path);
         }
         OnUi(() =>
@@ -153,18 +172,40 @@ public static class UiClickTest
         });
     }
 
-    private static void MakePng(string path, (byte B, byte G, byte R) color)
+    private static void MakePng(string path, (byte B, byte G, byte R) color,
+        (byte B, byte G, byte R)? second = null)
     {
         const int w = 320, h = 200;
         byte[] bgra = new byte[w * h * 4];
-        for (int i = 0; i < w * h; i++)
-        {
-            bgra[i * 4] = color.B;
-            bgra[i * 4 + 1] = color.G;
-            bgra[i * 4 + 2] = color.R;
-            bgra[i * 4 + 3] = 255;
-        }
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                (byte B, byte G, byte R) c = second is not null && ((x + y) / 26) % 2 == 1
+                    ? second.Value : color;
+                int i = y * w + x;
+                bgra[i * 4] = c.B;
+                bgra[i * 4 + 1] = c.G;
+                bgra[i * 4 + 2] = c.R;
+                bgra[i * 4 + 3] = 255;
+            }
         GdiPlus.SaveBgraAsPng(bgra, w, h, path);
+    }
+
+    /// <summary>
+    /// 等模型里的标注条数到达预期。注入的鼠标事件进的是系统输入队列，
+    /// 队列忙的时候抬起会比调用晚几百毫秒才被处理 —— 固定 sleep 会读到旧值。
+    /// </summary>
+    private static bool WaitShapeCount(ToolMode mode, int expected, int timeoutMs = 3000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        int seen = -1;
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            OnUi(() => seen = s_host!.Tools.Get(mode)?.ShapeCount ?? -1);
+            if (seen == expected) return true;
+            Thread.Sleep(60);
+        }
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -360,6 +401,10 @@ public static class UiClickTest
                 "save" => win.Layout.Save,
                 "putback" => win.Layout.PutBack,
                 "confirmdiscard" => win.Layout.ConfirmDiscard,
+                "text" => win.Layout.Tools.Count > MarkShape.KindText
+                    ? win.Layout.Tools[MarkShape.KindText] : win.Layout.Close,
+                "mosaic" => win.Layout.Tools.Count > MarkShape.KindMosaic
+                    ? win.Layout.Tools[MarkShape.KindMosaic] : win.Layout.Close,
                 _ => win.Layout.Close,
             };
             info = (win.Handle, r.X, r.Y, r.W, r.H);
@@ -466,8 +511,7 @@ public static class UiClickTest
                 Thread.Sleep(18);
             }
             ShellNative.mouse_event(ShellNative.MouseeventfLeftup, 0, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(260);
-            dragged = true;
+            dragged = WaitShapeCount(ToolMode.Markup, 1);
         }
         int shapes = 0;
         OnUi(() => shapes = s_host!.Tools.Get(ToolMode.Markup)?.ShapeCount ?? 0);
@@ -476,6 +520,8 @@ public static class UiClickTest
         string marked = Path.Combine(s_root, "frame-markup-drawn.png");
         OnUi(() => s_host!.Tools.DumpFrame(ToolMode.Markup, marked));
         Evidence.Add(marked);
+
+        VerifyMarkupAnnotations();
 
         // P0-2：带未保存标注点关闭，必须先出现三选一，不能直接丢内容。
         CloseTool(ToolMode.Markup);
@@ -501,6 +547,130 @@ public static class UiClickTest
         bool closed = false;
         OnUi(() => closed = !s_host!.Tools.IsVisible(ToolMode.Markup));
         Check("标记 → 选择「丢弃」后窗口才关闭", closed, $"已关闭={closed}");
+    }
+
+    /// <summary>
+    /// P1-10：两种新笔型必须真能落下 ——
+    /// 文字走原生输入窗（中文输入法、选区、粘贴都可用），马赛克按区域块化底图。
+    /// 断言读的是模型里的形状串，不是"画面上好像有东西"。
+    /// </summary>
+    private static void VerifyMarkupAnnotations()
+    {
+        string before = string.Empty;
+        OnUi(() => before = s_host!.Tools.Get(ToolMode.Markup)?.ShapeSummary() ?? string.Empty);
+        int beforeCount = before.Length == 0 ? 0 : before.Split(';').Length;
+
+        // ① 文字
+        var textTool = ToolButton(ToolMode.Markup, "text");
+        var canvas = ToolButton(ToolMode.Markup, "canvas");
+        bool textOk = false;
+        string textDetail = "工具按钮缺失";
+        if (textTool is not null && canvas is not null
+            && ShellNative.GetWindowRect(canvas.Value.Hwnd, out ShellNative.RECT cr))
+        {
+            (int X, int Y)? tool = ButtonScreenPoint(textTool.Value);
+            if (tool is not null) { LeftClick(tool.Value.X, tool.Value.Y); Thread.Sleep(140); }
+            int ax = cr.Left + canvas.Value.X + canvas.Value.W / 2;
+            int ay = cr.Top + canvas.Value.Y + canvas.Value.H / 2;
+            LeftClick(ax, ay);
+
+            IntPtr input = IntPtr.Zero;
+            for (int i = 0; i < 30 && input == IntPtr.Zero; i++)
+            {
+                input = ShellNative.FindWindowW("ClipLine_TextInput", null);
+                if (input == IntPtr.Zero) Thread.Sleep(50);
+            }
+            if (input == IntPtr.Zero) textDetail = "输入窗没有出现";
+            else
+            {
+                // 窗口刚创建、还没走到 WM_PAINT；立刻截屏只能拍到它下面那张脸。
+                Thread.Sleep(320);
+                IntPtr edit = ShellNative.FindWindowExW(input, IntPtr.Zero, "EDIT", null);
+                if (edit == IntPtr.Zero) textDetail = "输入窗里没有 EDIT 控件";
+                else
+                {
+                    // 客户区布局回归：标题栏高度由系统决定，用「整窗高度 − 常数」算出来的
+                    // EDIT 会顶出客户区、压到按钮上。这里量的是真实客户区坐标。
+                    bool inside = false;
+                    string insideText = "拿不到窗口矩形";
+                    if (ShellNative.GetWindowRect(edit, out ShellNative.RECT er)
+                        && ShellNative.GetClientRect(input, out ShellNative.RECT ic))
+                    {
+                        var p0 = new ShellNative.POINT(er.Left, er.Top);
+                        var p1 = new ShellNative.POINT(er.Right, er.Bottom);
+                        ShellNative.ScreenToClient(input, ref p0);
+                        ShellNative.ScreenToClient(input, ref p1);
+                        inside = p0.X >= 0 && p0.Y >= 0
+                            && p1.X <= ic.Right && p1.Y <= ic.Bottom;
+                        insideText = $"EDIT=({p0.X},{p0.Y})-({p1.X},{p1.Y}) " +
+                            $"客户区={ic.Right}×{ic.Bottom}";
+                    }
+                    Check("标记 → 文字输入窗：EDIT 完整落在客户区内（标题栏高度不写死）",
+                        inside, insideText);
+
+                    string inputShot = Path.Combine(s_root, "screen-markup-textinput.png");
+                    bool inputShotOk = CaptureScreen(inputShot);
+                    Evidence.Add(inputShot);
+                    Check("标记 → 文字输入窗整屏截图（中文输入与按钮可见）",
+                        inputShotOk && File.Exists(inputShot) && new FileInfo(inputShot).Length > 5000,
+                        inputShot);
+
+                    ShellNative.SetWindowTextW(edit, "打码测试");
+                    Thread.Sleep(90);
+                    // Enter 发给输入窗自身：与点「确定」走同一条 Finish(true) 路径。
+                    ShellNative.SendMessageW(input, ShellNative.WM_KEYDOWN,
+                        (UIntPtr)ShellNative.VkEnter, IntPtr.Zero);
+                    WaitShapeCount(ToolMode.Markup, beforeCount + 1);
+                    string after = string.Empty;
+                    OnUi(() => after = s_host!.Tools.Get(ToolMode.Markup)?.ShapeSummary() ?? string.Empty);
+                    int count = after.Length == 0 ? 0 : after.Split(';').Length;
+                    textOk = count == beforeCount + 1
+                        && after.Contains($"4:打码测试:", StringComparison.Ordinal);
+                    textDetail = $"{beforeCount}→{count} 内容={after}";
+                }
+            }
+        }
+        Check("标记 → 文字笔型：真实打开输入窗、中文落字进模型", textOk, textDetail);
+        string textShot = Path.Combine(s_root, "frame-markup-text.png");
+        OnUi(() => s_host!.Tools.DumpFrame(ToolMode.Markup, textShot));
+        Evidence.Add(textShot);
+
+        // ② 马赛克
+        int countBefore = 0;
+        OnUi(() => countBefore = s_host!.Tools.Get(ToolMode.Markup)?.ShapeCount ?? 0);
+        bool mosaicOk = false;
+        string mosaicDetail = "工具按钮缺失";
+        var mosaicTool = ToolButton(ToolMode.Markup, "mosaic");
+        if (mosaicTool is not null && canvas is not null
+            && ShellNative.GetWindowRect(canvas.Value.Hwnd, out ShellNative.RECT cr2))
+        {
+            (int X, int Y)? tool = ButtonScreenPoint(mosaicTool.Value);
+            if (tool is not null) { LeftClick(tool.Value.X, tool.Value.Y); Thread.Sleep(140); }
+            int x0 = cr2.Left + canvas.Value.X + canvas.Value.W / 3;
+            int y0 = cr2.Top + canvas.Value.Y + canvas.Value.H / 3;
+            int x1 = cr2.Left + canvas.Value.X + canvas.Value.W / 2;
+            int y1 = cr2.Top + canvas.Value.Y + canvas.Value.H / 2;
+            MouseMove(x0, y0);
+            Thread.Sleep(70);
+            ShellNative.mouse_event(ShellNative.MouseeventfLeftdown, 0, 0, 0, UIntPtr.Zero);
+            for (int i = 1; i <= 6; i++)
+            {
+                MouseMove(x0 + (x1 - x0) * i / 6, y0 + (y1 - y0) * i / 6);
+                Thread.Sleep(20);
+            }
+            ShellNative.mouse_event(ShellNative.MouseeventfLeftup, 0, 0, 0, UIntPtr.Zero);
+            WaitShapeCount(ToolMode.Markup, countBefore + 1);
+            string summary = string.Empty;
+            OnUi(() => summary = s_host!.Tools.Get(ToolMode.Markup)?.ShapeSummary() ?? string.Empty);
+            int count = summary.Length == 0 ? 0 : summary.Split(';').Length;
+            mosaicOk = count == countBefore + 1
+                && summary.Contains("5:", StringComparison.Ordinal);
+            mosaicDetail = $"{countBefore}→{count} 内容={summary}";
+        }
+        Check("标记 → 马赛克笔型：拖出区域后落进模型", mosaicOk, mosaicDetail);
+        string mosaicShot = Path.Combine(s_root, "frame-markup-mosaic.png");
+        OnUi(() => s_host!.Tools.DumpFrame(ToolMode.Markup, mosaicShot));
+        Evidence.Add(mosaicShot);
     }
 
     private static void VerifyHeld()
@@ -594,6 +764,61 @@ public static class UiClickTest
             hasBitmap && hasDrop, $"bitmap={hasBitmap} hdrop={hasDrop}；{detail}");
         Check("复制 → 不打开任何替身窗口（与「打开」明确区分）", !anyTool,
             $"工具窗可见={anyTool}");
+    }
+
+    /// <summary>
+    /// P0-5：真的按住卡片拖出窗口，再按 Esc 取消。
+    /// 断言三件事：按下并移动确实升级成了 OLE 拖放（DraggingOut）、取消后文件仍在、
+    /// 卡片仍在绳上。CF_HDROP 载荷与「去留按磁盘判定」由冒烟确定性覆盖；
+    /// 这里证明的是 DoDragDrop 真的被拉起、并且能安全返回。
+    /// </summary>
+    private static void VerifyDragOut()
+    {
+        (int X, int Y)? center = CardCenter();
+        if (center is null)
+        {
+            Check("真实拖拽：按住卡片拖出 → Esc 取消后文件与卡片都不受影响", false, "没有卡片");
+            return;
+        }
+        string path = s_host!.Facade.Current.Items[0].Path;
+        int before = s_host.Facade.Current.Items.Count;
+        bool existsBefore = File.Exists(path);
+
+        MouseMove(center.Value.X, center.Value.Y);
+        // 30fps 帧驱动把窗口从 passthrough 切成可命中需要几帧；睡不够的话
+        // 这次按下会落到下层桌面上，绳窗口根本收不到 WM_LBUTTONDOWN。
+        Thread.Sleep(340);
+        ShellNative.mouse_event(ShellNative.MouseeventfLeftdown, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(70);
+        int tx = Math.Max(30, center.Value.X - 640);
+        int ty = Math.Clamp(center.Value.Y + 300, 60,
+            ShellNative.GetSystemMetrics(ShellNative.SM_CYSCREEN) - 80);
+        for (int i = 1; i <= 8; i++)
+        {
+            MouseMove(center.Value.X + (tx - center.Value.X) * i / 8,
+                center.Value.Y + (ty - center.Value.Y) * i / 8);
+            Thread.Sleep(40);
+        }
+        Thread.Sleep(150);
+        bool dragging = s_host.Rope.DraggingOut;
+        // 「卡片变淡 45%」和拖拽预览只在 DoDragDrop 进行中存在，Esc 一按就没了，
+        // 唯一能留证据的时机就是这里。
+        string dragShot = Path.Combine(s_root, "screen-drag-out.png");
+        bool dragShotOk = CaptureScreen(dragShot);
+        Evidence.Add(dragShot);
+        Check("真实拖拽：拖放进行中截屏（源卡片变淡 + 指针处有拖拽预览）",
+            dragging && dragShotOk && File.Exists(dragShot) && new FileInfo(dragShot).Length > 5000,
+            $"{dragShot} 拖放中={dragging}");
+        PressKey(ShellNative.VkEscape);
+        Thread.Sleep(160);
+        ShellNative.mouse_event(ShellNative.MouseeventfLeftup, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(500);
+
+        bool existsAfter = File.Exists(path);
+        int after = s_host.Facade.Current.Items.Count;
+        Check("真实拖拽：按住卡片拖出 → Esc 取消后文件与卡片都不受影响",
+            dragging && existsBefore && existsAfter && after == before,
+            $"进入拖放={dragging} 文件={existsBefore}->{existsAfter} 卡片={before}->{after}");
     }
 
     private static void VerifyUnpin()

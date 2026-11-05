@@ -33,8 +33,22 @@ public enum ToolHover
     ConfirmCancel,
 }
 
-/// <summary>标注画布上的一条笔迹/形状，坐标是工具窗口客户区物理像素。</summary>
-public sealed record MarkShape(int Kind, int X0, int Y0, int X1, int Y1);
+/// <summary>
+/// 标注画布上的一条笔迹/形状，坐标是基准坐标（未缩放未平移）。
+/// <para>Kind：0 矩形 / 1 椭圆 / 2 箭头 / 3 笔 / 4 文字 / 5 马赛克。</para>
+/// <para>文字用 <see cref="Text"/> 存内容、<see cref="Size"/> 存字号（DIP）；马赛克只用矩形区域。</para>
+/// </summary>
+public sealed record MarkShape(int Kind, int X0, int Y0, int X1, int Y1,
+    string? Text = null, int Size = 0)
+{
+    internal const int KindRectangle = 0;
+    internal const int KindEllipse = 1;
+    internal const int KindArrow = 2;
+    internal const int KindPen = 3;
+    internal const int KindText = 4;
+    internal const int KindMosaic = 5;
+    internal const int ToolCount = 6;
+}
 
 /// <summary>一次工具窗口重绘需要的全部状态。</summary>
 public sealed record ToolFrame(
@@ -171,6 +185,9 @@ internal sealed class ToolWindow : IDisposable
     private static readonly Dictionary<IntPtr, ToolWindow> Windows = new();
     private static ShellNative.WndProcDelegate? s_proc;
     private static bool s_registered;
+
+    /// <summary>诊断出口（由壳层接到本地日志）；画笔落点这类离散事件才写，不做逐帧打印。</summary>
+    internal static Action<string>? Trace;
     private static int s_heldOffset;
 
     private readonly ShellAppHost _host;
@@ -195,6 +212,10 @@ internal sealed class ToolWindow : IDisposable
     private bool _spaceDown;
     private int _dx0, _dy0, _dx1, _dy1;
     private int _downX, _downY;
+    // 文字标注：单击不立刻落形状，先弹原生输入窗；_textEditIndex ≥ 0 表示改已有那条。
+    private bool _textPending;
+    private int _textEditIndex = -1;
+    private int _fontSize = 20;
     private int _panX, _panY;
     private double _zoom = 1.0;
     private int _posX, _posY;
@@ -239,6 +260,23 @@ internal sealed class ToolWindow : IDisposable
     public Guid ItemId => _itemId;
     public string Status => _status;
     public int ShapeCount => _shapes.Count;
+
+    /// <summary>
+    /// 每条标注的「种类 + 关键字段」串；点击验证用它确认文字内容与马赛克区域
+    /// 真的落进了模型，而不是只画了一帧像素。
+    /// </summary>
+    public string ShapeSummary()
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (MarkShape s in _shapes)
+        {
+            if (sb.Length > 0) sb.Append(';');
+            if (s.Kind == MarkShape.KindText) sb.Append($"{s.Kind}:{s.Text}:{s.Size}");
+            else sb.Append($"{s.Kind}:{s.X0},{s.Y0},{s.X1},{s.Y1}");
+        }
+        return sb.ToString();
+    }
+
     public int Index => _index;
     public bool IsDirty => _dirty;
     public bool IsConfirming => _confirmClose;
@@ -785,13 +823,86 @@ internal sealed class ToolWindow : IDisposable
                 (int)Math.Round(cy + (y - cy - _panY) / _zoom));
     }
 
+    /// <summary>基准坐标 → 当前屏幕坐标（缩放/平移的逆运算），文字命中框与绘制共用。</summary>
+    private (int X, int Y) ToScreenPoint(int bx, int by)
+    {
+        var c = _layout.Canvas;
+        if (c.W <= 0 || (Math.Abs(_zoom - 1) < 0.001 && _panX == 0 && _panY == 0)) return (bx, by);
+        double cx = c.X + c.W / 2.0, cy = c.Y + c.H / 2.0;
+        return ((int)Math.Round(cx + (bx - cx) * _zoom + _panX),
+                (int)Math.Round(cy + (by - cy) * _zoom + _panY));
+    }
+
+    /// <summary>
+    /// 打开原生文字输入窗。新加时用当前锚点与字号；改已有条目时保留原位置，
+    /// 只把内容换掉（Ctrl+Z 可撤销）。
+    /// </summary>
+    private void OpenTextEditor(int existing)
+    {
+        bool edit = existing >= 0 && existing < _shapes.Count;
+        string initial = edit ? _shapes[existing].Text ?? string.Empty : string.Empty;
+        int size = edit && _shapes[existing].Size > 0 ? _shapes[existing].Size : _fontSize;
+        int bx = edit ? _shapes[existing].X0 : _dx0;
+        int by = edit ? _shapes[existing].Y0 : _dy0;
+        int index = existing;
+        TextInputWindow.Show(_hwnd, _scale, edit ? "编辑文字" : "添加文字", initial, text =>
+        {
+            PushUndo();
+            var shape = new MarkShape(MarkShape.KindText, bx, by, 0, 0, text, size);
+            if (edit && index < _shapes.Count) _shapes[index] = shape;
+            else _shapes.Add(shape);
+            _dirty = true;
+            _status = edit
+                ? "文字已更新 · Ctrl+Z 撤销 · Ctrl+S 保存"
+                : $"已添加 {_shapes.Count} 条标注 · Ctrl+Z 撤销 · Ctrl+S 保存";
+            SaveDraft();
+            Render();
+        });
+    }
+
+    /// <summary>命中已有文字（后加的优先）：用估算的文本块包围盒做测试。</summary>
+    private int HitTextShape(int screenX, int screenY)
+    {
+        for (int i = _shapes.Count - 1; i >= 0; i--)
+        {
+            MarkShape s = _shapes[i];
+            if (s.Kind != MarkShape.KindText || string.IsNullOrEmpty(s.Text)) continue;
+            var (w, h) = TextBlockSize(s.Text, s.Size > 0 ? s.Size : _fontSize);
+            (int x0, int y0) = ToScreenPoint(s.X0, s.Y0);
+            int sw = (int)Math.Round(w * _zoom * _scale);
+            int sh = (int)Math.Round(h * _zoom * _scale);
+            if (screenX >= x0 - Px(4) && screenX <= x0 + sw + Px(4)
+                && screenY >= y0 - Px(4) && screenY <= y0 + sh + Px(4)) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>文本块尺寸估算（DIP）：中文按 1 em、西文按 0.56 em，行高 1.35。</summary>
+    internal static (int W, int H) TextBlockSize(string text, int size)
+    {
+        int em = Math.Max(8, size);
+        string[] lines = text.Replace("\r\n", "\n").Split('\n');
+        int widest = 100;
+        foreach (string line in lines)
+        {
+            int units = 0;
+            foreach (char ch in line) units += ch > 0x2E80 ? 100 : 56;
+            widest = Math.Max(widest, units);
+        }
+        return (Math.Max(1, (int)Math.Round(widest * em / 100.0)),
+            Math.Max(1, (int)Math.Round(lines.Length * em * 1.35)));
+    }
+
     // ------------------------------------------------------------------
     // 标注草稿：每笔落盘，崩溃/误关后可恢复（P0-2 的兜底）
     // ------------------------------------------------------------------
 
     private static string DraftPath => Path.Combine(Path.GetTempPath(), "ClipLine", "markup-draft.json");
 
-    private sealed record DraftShape(int K, int X0, int Y0, int X1, int Y1);
+    // T/S 是 v1.6 新增：文字内容与字号。旧草稿缺这两个字段时按 null/0 读，
+    // 因此升级不会让用户丢掉未保存的标注。
+    private sealed record DraftShape(int K, int X0, int Y0, int X1, int Y1,
+        string? T = null, int S = 0);
 
     private sealed record DraftDocument(string Source, List<DraftShape> Shapes);
 
@@ -803,7 +914,7 @@ internal sealed class ToolWindow : IDisposable
             string? dir = Path.GetDirectoryName(DraftPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             var doc = new DraftDocument(_shapesPath,
-                _shapes.ConvertAll(s => new DraftShape(s.Kind, s.X0, s.Y0, s.X1, s.Y1)));
+                _shapes.ConvertAll(s => new DraftShape(s.Kind, s.X0, s.Y0, s.X1, s.Y1, s.Text, s.Size)));
             File.WriteAllText(DraftPath, JsonSerializer.Serialize(doc));
         }
         catch { /* 草稿失败不影响绘制 */ }
@@ -818,7 +929,7 @@ internal sealed class ToolWindow : IDisposable
             if (doc is null || !string.Equals(doc.Source, source, StringComparison.OrdinalIgnoreCase))
                 return;
             foreach (DraftShape s in doc.Shapes)
-                _shapes.Add(new MarkShape(s.K, s.X0, s.Y0, s.X1, s.Y1));
+                _shapes.Add(new MarkShape(s.K, s.X0, s.Y0, s.X1, s.Y1, s.T, s.S));
             if (_shapes.Count > 0)
             {
                 _dirty = true;
@@ -892,14 +1003,24 @@ internal sealed class ToolWindow : IDisposable
                 BeginDrag(DragMode.Pan, x, y);
                 return IntPtr.Zero;
             }
-            PushUndo();
-            _dragging = true;
-            _drag = DragMode.Markup;
             (int mx, int my) = ToBasePoint(x, y);
             _dx0 = _dx1 = mx;
             _dy0 = _dy1 = my;
             _downX = x;
             _downY = y;
+            if (_toolIndex == MarkShape.KindText)
+            {
+                // 文字不是拖出来的：先记下锚点，抬起时若没拖动就开输入窗。
+                // 点在已有文字上则进入「改这条」，位置保持不变。
+                _textPending = true;
+                _textEditIndex = HitTextShape(x, y);
+                ShellNative.SetCapture(_hwnd);
+                Render();
+                return IntPtr.Zero;
+            }
+            PushUndo();
+            _dragging = true;
+            _drag = DragMode.Markup;
             ShellNative.SetCapture(_hwnd);
             Render();
             return IntPtr.Zero;
@@ -939,6 +1060,24 @@ internal sealed class ToolWindow : IDisposable
             return;
         }
 
+        if (_textPending)
+        {
+            _textPending = false;
+            ShellNative.ReleaseCapture();
+            bool dragged = Math.Abs(x - _downX) + Math.Abs(y - _downY) > 3;
+            int edit = _textEditIndex;
+            _textEditIndex = -1;
+            if (dragged)
+            {
+                // 在文字工具下拖了一下：当成「换个地方落字」，用抬起点作锚点。
+                (int bx, int by) = ToBasePoint(x, y);
+                _dx0 = bx;
+                _dy0 = by;
+            }
+            OpenTextEditor(edit);
+            return;
+        }
+
         if (_dragging)
         {
             _dragging = false;
@@ -948,9 +1087,7 @@ internal sealed class ToolWindow : IDisposable
             if (moved)
             {
                 (int bx, int by) = ToBasePoint(x, y);
-                _shapes.Add(new MarkShape(_toolIndex, _dx0, _dy0, bx, by));
-                _status = $"已添加 {_shapes.Count} 条标注 · Ctrl+Z 撤销 · Ctrl+S 保存";
-                SaveDraft();
+                CommitShape(bx, by);
             }
             else
             {
@@ -996,6 +1133,12 @@ internal sealed class ToolWindow : IDisposable
                 break;
             case ToolHover.Tool:
                 _toolIndex = index;
+                _status = index switch
+                {
+                    MarkShape.KindText => $"文字：单击画布落字 · [ ] 调字号（当前 {_fontSize}）",
+                    MarkShape.KindMosaic => "马赛克：拖出要遮挡的区域 · Ctrl+Z 撤销",
+                    _ => "拖动画出标注 · Ctrl+Z 撤销 · Ctrl+S 保存",
+                };
                 Render();
                 break;
             case ToolHover.Thumb:
@@ -1012,6 +1155,37 @@ internal sealed class ToolWindow : IDisposable
                 Render();
                 break;
         }
+    }
+
+    /// <summary>把当前笔型从 (dx0,dy0) 落到 (bx,by)：抬起与「捕获被抢走」两条路径共用。</summary>
+    private void CommitShape(int bx, int by)
+    {
+        _shapes.Add(new MarkShape(_toolIndex, _dx0, _dy0, bx, by));
+        Trace?.Invoke($"tool.shape-add kind={_toolIndex} ({_dx0},{_dy0})-({bx},{by}) " +
+            $"total={_shapes.Count}");
+        _status = $"已添加 {_shapes.Count} 条标注 · Ctrl+Z 撤销 · Ctrl+S 保存";
+        SaveDraft();
+    }
+
+    /// <summary>
+    /// 捕获被外部夺走时的收尾：笔迹落在最后一点（不丢用户画的线），
+    /// 还没落字的文字点击直接丢弃，避免弹出不该弹的输入窗。
+    /// </summary>
+    private void AbortDragOnCaptureLoss()
+    {
+        bool wasPending = _textPending;
+        _textPending = false;
+        _textEditIndex = -1;
+        if (!_dragging)
+        {
+            if (wasPending) Render();
+            return;
+        }
+        _dragging = false;
+        _drag = DragMode.None;
+        if (Math.Abs(_dx1 - _dx0) + Math.Abs(_dy1 - _dy0) > 3) CommitShape(_dx1, _dy1);
+        else if (_undo.Count > 0) _undo.RemoveAt(_undo.Count - 1);
+        Render();
     }
 
     /// <summary>修剪窗主按钮：交给系统播放器，不再假装编码（P0-4）。</summary>
@@ -1084,6 +1258,12 @@ internal sealed class ToolWindow : IDisposable
 
             case ShellNative.WM_LBUTTONUP:
                 window.OnLeftUp(Point(lParam).X, Point(lParam).Y);
+                return IntPtr.Zero;
+
+            case 0x0215: // WM_CAPTURECHANGED
+                // 捕获被外部抢走（系统手势、弹窗、任务切换）后抬起事件就再也收不到了。
+                // 这时按「笔迹落在最后一点」收尾：用户画的线不会消失，也不会留下幽灵预览。
+                window.AbortDragOnCaptureLoss();
                 return IntPtr.Zero;
 
             case ShellNative.WM_LBUTTONDBLCLK:
@@ -1207,6 +1387,16 @@ internal sealed class ToolWindow : IDisposable
         {
             if (vk == 0x30) SetZoom(1.0, 0, 0);
             else SetZoom(_zoom * (vk == 0xBB ? 1.15 : 1 / 1.15), 0, 0);
+            return IntPtr.Zero;
+        }
+        // [ / ] 调文字字号（OEM_4 / OEM_6）。工具窗本身不接受文字输入，
+        // 不会和用户打方括号冲突；输入框里有焦点时按键发给输入框。
+        if (_mode == ToolMode.Markup && (vk == 0xDB || vk == 0xDD))
+        {
+            _fontSize = Math.Clamp(_fontSize + (vk == 0xDD ? 2 : -2), 12, 48);
+            _toolIndex = MarkShape.KindText;
+            _status = $"文字字号 {_fontSize} · 单击画布落字 · Ctrl+Z 撤销";
+            Render();
             return IntPtr.Zero;
         }
         if (vk == ShellNative.VkDelete && _mode == ToolMode.Markup && _shapes.Count > 0)

@@ -86,6 +86,9 @@ internal sealed class RealInputBridge : IDisposable
         _host.Tray.ThemeChanged += OnSystemThemeChanged;
         _host.Rope.Mouse += OnRopeMouse;
         _host.Rope.Key += OnRopeKey;
+        _host.Rope.Drag += OnRopeDrag;
+        RopeWindow.Trace = Diag;
+        ToolWindow.Trace = Diag;
 
         SyncWatchers();
         _host.Tray.SetTooltip("ClipLine — 截个图，它就会挂在这里");
@@ -575,6 +578,20 @@ internal sealed class RealInputBridge : IDisposable
     }
 
     /// <summary>
+    /// 卡片被拖出后的落点处理（P0-5）。文件还在（复制 / 取消）就什么都不做，
+    /// 文件已经离开原路径就交给门面的 FileDisappeared —— 那条路径本来就在监视
+    /// 「文件被外部删除」，语义完全一致：立即下线 + 播放掉落动画。
+    /// </summary>
+    internal void OnRopeDrag(RopeDragEvent e)
+    {
+        Diag($"drag: \"{e.Path}\" -> {e.Outcome}");
+        if (e.Outcome == DragOutcome.Moved && !File.Exists(e.Path))
+            _host.Facade.Handle(new FileDisappeared(e.Path));
+        _host.AdvanceFrame();
+        _host.RenderFrame();
+    }
+
+    /// <summary>
     /// 键盘操作（P0-6）：Tab 与方向键已在窗口内部换成焦点移动，这里只处理动作键。
     /// 全部走既有输入（KeyBorrow / TrayMenuItemInvoked / ContextMenuRequested），
     /// 不新增门面输入，唯一测试接缝保持不变。
@@ -957,6 +974,7 @@ internal sealed class RealInputBridge : IDisposable
         _host.Tray.ThemeChanged -= OnSystemThemeChanged;
         _host.Rope.Mouse -= OnRopeMouse;
         _host.Rope.Key -= OnRopeKey;
+        _host.Rope.Drag -= OnRopeDrag;
         _shortcutWindow?.Dispose();
         _shortcutWindow = null;
         foreach (FolderWatcher watcher in _watchers.Values) watcher.Dispose();

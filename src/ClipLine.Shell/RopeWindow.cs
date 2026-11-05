@@ -21,6 +21,9 @@ public readonly record struct RopeMouseEvent(
 public readonly record struct RopeKeyEvent(
     uint VirtualKey, int CardIndex, Guid ItemId, bool Ctrl, bool Shift);
 
+/// <summary>一次卡片拖放的结果（P0-5）。Path 已是绝对路径。</summary>
+public readonly record struct RopeDragEvent(Guid ItemId, string Path, DragOutcome Outcome);
+
 /// <summary>
 /// 自管分层 HWND 绳窗口（P0 结论的落地）：
 /// WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW，初始 WS_EX_TRANSPARENT 整窗穿透，
@@ -36,6 +39,11 @@ public sealed class RopeWindow : IDisposable
     private static bool s_classRegistered;
     private static IntPtr s_arrow;
     private static IntPtr s_hand;
+    private static int s_dragThresholdX = 4;
+    private static int s_dragThresholdY = 4;
+
+    /// <summary>诊断出口：输入桥把它接到本地日志，仅用于定位真实输入路径的问题。</summary>
+    internal static Action<string>? Trace;
 
     /// <summary>窗口类注册时写入的系统光标句柄；冒烟用它验证「已显式设置、非等待光标」。</summary>
     internal static IntPtr ClassCursor => s_arrow;
@@ -48,6 +56,11 @@ public sealed class RopeWindow : IDisposable
     private int _focusIndex = -1;
     private int _hoverIndex = -1;
     private bool _keyboard;
+    // 拖放（P0-5）：按下时记住来源卡，位移超过系统拖拽阈值就升级成一次 OLE 拖放。
+    private int _dragCard = -1;
+    private int _dragStartX;
+    private int _dragStartY;
+    private bool _draggingOut;
 
     public RopeWindow(double scale) => _scale = scale <= 0 ? 1.0 : scale;
 
@@ -61,11 +74,23 @@ public sealed class RopeWindow : IDisposable
     public int FocusIndex => _focusIndex;
     public bool KeyboardFocused => _keyboard;
 
+    /// <summary>
+    /// 是否正处在一次 OLE 拖放中。拖放期间 <c>DoDragDrop</c> 会阻塞 UI 线程，
+    /// 点击验证靠这个只读标志确认「按下并拖动真的升级成了拖放」。
+    /// </summary>
+    public bool DraggingOut => _draggingOut;
+
     /// <summary>真实鼠标输入（已换算成卡片索引与条目 Id）。</summary>
     public event Action<RopeMouseEvent>? Mouse;
 
     /// <summary>键盘输入（Tab 已由窗口内部消化成焦点移动，不会再抛到这里）。</summary>
     public event Action<RopeKeyEvent>? Key;
+
+    /// <summary>
+    /// 卡片被拖出并放下后的结果（P0-5）。<see cref="DragOutcome.Moved"/> 表示文件
+    /// 已经不在原路径（移进文件夹或被回收站收走），卡片应当下线。
+    /// </summary>
+    public event Action<RopeDragEvent>? Drag;
 
     /// <summary>掉落层复用同一个已注册窗口类（同一 WndProc、同一显式箭头光标）。</summary>
     internal static void EnsureClass()
@@ -75,6 +100,8 @@ public sealed class RopeWindow : IDisposable
         s_arrow = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcArrow);
         s_hand = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcHand);
         if (s_hand == IntPtr.Zero) s_hand = s_arrow;
+        s_dragThresholdX = Math.Max(2, ShellNative.GetSystemMetrics(ShellNative.SmCxDrag));
+        s_dragThresholdY = Math.Max(2, ShellNative.GetSystemMetrics(ShellNative.SmCyDrag));
         var wc = new ShellNative.WNDCLASSEXW
         {
             CbSize = (uint)Marshal.SizeOf<ShellNative.WNDCLASSEXW>(),
@@ -160,6 +187,56 @@ public sealed class RopeWindow : IDisposable
         _canvas.HoverIndex = _hoverIndex;
         _canvas.Render(_frame);
         _canvas.Present(_hwnd);
+    }
+
+    /// <summary>
+    /// 把第 <paramref name="index"/> 张卡变成一次标准 OLE 拖放（P0-5）。
+    /// 拖拽期间这张卡在绳上降到 45%，拖完再按结果通知外部。
+    /// <c>DoDragDrop</c> 会自己跑一个模态消息循环，直到用户松手或按 Esc。
+    /// </summary>
+    private void BeginDragOut(int index)
+    {
+        try
+        {
+            if (_frame is null || _canvas is null || index < 0 || index >= _frame.Cards.Count) return;
+            CardVisual card = _frame.Cards[index];
+            string path;
+            try { path = Path.GetFullPath(card.Path); }
+            catch (Exception) { path = card.Path; }
+
+            IntPtr bitmap = _canvas.CreateCardDragBitmap(index, out int bw, out int bh,
+                out int hx, out int hy);
+            try
+            {
+                _canvas.DragSourceIndex = index;
+                _canvas.Render(_frame);
+                _canvas.Present(_hwnd);
+                DragOutcome outcome = DragDropBridge.DragFile(_hwnd, path, bitmap, bw, bh, hx, hy);
+                Drag?.Invoke(new RopeDragEvent(card.Id, path, outcome));
+            }
+            finally
+            {
+                if (bitmap != IntPtr.Zero) ShellNative.DeleteObject(bitmap);
+                _canvas.DragSourceIndex = -1;
+                if (_frame is not null)
+                {
+                    // 结果可能是「取消 / 复制」：卡片必须马上恢复不透明，
+                    // 不能等下一次状态帧（那时 signature 可能没变，根本不会重绘）。
+                    _canvas.Render(_frame);
+                    _canvas.Present(_hwnd);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 拖放失败绝不能影响主流程：记一行诊断，卡片照旧留在绳上。
+            Trace?.Invoke("drag: failed " + ex.GetType().Name + ": " + ex.Message);
+        }
+        finally
+        {
+            _draggingOut = false;
+            ShellNative.ReleaseCapture();
+        }
     }
 
     /// <summary>
@@ -293,12 +370,49 @@ public sealed class RopeWindow : IDisposable
                 ShellNative.WM_MOUSEWHEEL => RopeMouseKind.Wheel,
                 _ => (RopeMouseKind?)null,
             };
+            if (msg == ShellNative.WM_MOUSEMOVE)
+            {
+                // 按下后位移越过系统拖拽阈值 → 升级成真正的 OLE 拖放（P0-5）。
+                // 这样「单击复制」与「拖出文件」不会互相误触。
+                if (window._dragCard >= 0 && !window._draggingOut)
+                {
+                    int dx = Math.Abs(x - window._dragStartX);
+                    int dy = Math.Abs(y - window._dragStartY);
+                    if (dx >= s_dragThresholdX || dy >= s_dragThresholdY)
+                    {
+                        int card = window._dragCard;
+                        window._dragCard = -1;
+                        window._draggingOut = true;
+                        Post(() => window.BeginDragOut(card));
+                    }
+                }
+                return IntPtr.Zero;
+            }
+
             if (kind is not null)
             {
                 Guid id = Guid.Empty;
                 int index = window.HitCardIndex(x, y);
                 if (index >= 0 && window._frame is not null && index < window._frame.Cards.Count)
                     id = window._frame.Cards[index].Id;
+                if (kind == RopeMouseKind.Down)
+                {
+                    if (index >= 0)
+                    {
+                        window._dragCard = index;
+                        window._dragStartX = x;
+                        window._dragStartY = y;
+                        ShellNative.SetCapture(hWnd);
+                        Trace?.Invoke($"down: card={index} at=({x},{y}) " +
+                            $"cap={ShellNative.GetCapture() == hWnd}");
+                    }
+                    else Trace?.Invoke($"down: no card at ({x},{y})");
+                }
+                else if (kind == RopeMouseKind.Up)
+                {
+                    window._dragCard = -1;
+                    ShellNative.ReleaseCapture();
+                }
                 var evt = new RopeMouseEvent(kind.Value, x, y, index, id, wheel);
                 Post(() => window.Mouse?.Invoke(evt));
                 return IntPtr.Zero;

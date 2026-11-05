@@ -357,6 +357,9 @@ public sealed class ShellAppHost : IDisposable
     public void UpdateHitTest(int pointerXpx, int pointerYpx)
     {
         if (!Rope.IsVisible) return;
+        // 按住/拖拽期间窗口持有鼠标捕获：这时改 passthrough 会重设窗口样式，
+        // 捕获随之丢失，后续 WM_MOUSEMOVE 就再也到不了绳窗口，拖放永远起不来。
+        if (ShellNative.GetCapture() == Rope.Handle) return;
         int index = Rope.CardIndexAt(pointerXpx, pointerYpx);
         // P1 补充：悬停高亮与命中切换同源，避免两套判定给出不一致的结果。
         if (index != _hoverCard)

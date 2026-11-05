@@ -53,6 +53,12 @@ internal sealed unsafe class RopeCanvas : IDisposable
     /// <summary>指针悬停卡片序号；-1 表示没有悬停。绘制 1.5 DIP 弱描边。</summary>
     internal int HoverIndex { get; set; } = -1;
 
+    /// <summary>
+    /// 正在被拖出的卡片序号；-1 表示没有。拖拽期间这张卡降到 45% 不透明，
+    /// 让「它正被搬走」在绳上也是一眼可见（P0-5）。
+    /// </summary>
+    internal int DragSourceIndex { get; set; } = -1;
+
     internal RopeCanvas(int widthPx, int heightPx, double scale)
     {
         _widthPx = widthPx;
@@ -153,10 +159,14 @@ internal sealed unsafe class RopeCanvas : IDisposable
             CardVisual? card = i < frame.Cards.Count ? frame.Cards[i] : null;
             double swing = card?.SwingDegrees ?? 0;
             int drawY = y + Px(card?.DropDip ?? 0);
+            // 拖拽源卡片降到 45%：与桌面 DnD 的「原件半透明」惯例一致。
+            double restoreAlpha = _alphaScale;
+            if (i == DragSourceIndex) _alphaScale = 0.45;
             BeginCard(x, drawY, cardW, cardH, swing);
             DrawCard(x, drawY, cardW, cardH, card?.Kept ?? i < frame.KeptCount, card?.Path,
                 card?.Copied ?? false, focused: i == FocusIndex, hovered: i == HoverIndex);
             EndCard();
+            _alphaScale = restoreAlpha;
         }
         _inCard = false;
         if (frame.KeptCount > 0) DrawKnot(left, spacing, cardW, count, frame.KeptCount);
@@ -1027,10 +1037,10 @@ internal sealed unsafe class RopeCanvas : IDisposable
         int toolsW = Px(56);
         int contentH = h - Px(42);
         FillRoundRectRgb(left, top, toolsW, contentH, Px(8), t.SurfaceAlt, 255);
-        int bs = Px(40);
-        for (int i = 0; i < 4; i++)
+        int bs = Px(38);
+        for (int i = 0; i < MarkShape.ToolCount; i++)
         {
-            var r = (left + Px(8), top + Px(8) + i * (bs + Px(4)), bs, bs);
+            var r = (left + Px(9), top + Px(8) + i * (bs + Px(3)), bs, bs);
             bool on = i == f.ToolIndex;
             bool hot = f.Hover == ToolHover.Tool && f.HoverIndex == i;
             int bg = on ? t.Accent : hot ? t.ControlHover : t.SurfaceAlt;
@@ -1123,12 +1133,37 @@ internal sealed unsafe class RopeCanvas : IDisposable
                 StrokeTool(cx + s, cy - s, cx + s - Px(5), cy - s + Px(2), rgb, thick);
                 StrokeTool(cx + s, cy - s, cx + s - Px(2), cy - s + Px(5), rgb, thick);
                 break;
-            default:
+            case 3:
                 // 笔：两条平行斜线构成笔身，左下平口 + 顶端短横构成笔尖/笔帽。
                 StrokeTool(cx - s, cy + s, cx + s - Px(2), cy - s + Px(2), rgb, thick);
                 StrokeTool(cx - s + Px(4), cy + s, cx + s + Px(2), cy - s + Px(2), rgb, thick);
                 StrokeTool(cx - s, cy + s, cx - s + Px(5), cy + s, rgb, thick);
                 StrokeTool(cx + s - Px(4), cy - s + Px(1), cx + s, cy - s + Px(4), rgb, thick);
+                break;
+            case 4:
+                // 文字：T 字（横 + 竖）+ 右下角一道短基线。
+                StrokeTool(cx - s, cy - s + Px(2), cx + s, cy - s + Px(2), rgb, thick);
+                StrokeTool(cx, cy - s + Px(2), cx, cy + s - Px(1), rgb, thick);
+                StrokeTool(cx - s + Px(2), cy + s, cx + s - Px(3), cy + s, rgb, thick);
+                break;
+            default:
+                // 马赛克：3×3 小方块，右上与左下实心，其余只描边。
+                int cell = Math.Max(2, Px(5)), gap2 = Math.Max(1, Px(1));
+                for (int gy = 0; gy < 3; gy++)
+                    for (int gx = 0; gx < 3; gx++)
+                    {
+                        int bx0 = cx - s + gx * (cell + gap2);
+                        int by0 = cy - s + gy * (cell + gap2);
+                        bool filled = (gx + gy) % 2 == 0;
+                        if (filled) FillRectRgb(bx0, by0, cell, cell, rgb, 255);
+                        else
+                        {
+                            StrokeTool(bx0, by0, bx0 + cell - 1, by0, rgb, 1);
+                            StrokeTool(bx0 + cell - 1, by0, bx0 + cell - 1, by0 + cell - 1, rgb, 1);
+                            StrokeTool(bx0 + cell - 1, by0 + cell - 1, bx0, by0 + cell - 1, rgb, 1);
+                            StrokeTool(bx0, by0 + cell - 1, bx0, by0, rgb, 1);
+                        }
+                    }
                 break;
         }
     }
@@ -1137,8 +1172,106 @@ internal sealed unsafe class RopeCanvas : IDisposable
         double zoom, int panX, int panY, int rgb)
     {
         (int x0, int y0) = ToScreen(s.X0, s.Y0, c, zoom, panX, panY);
+        if (s.Kind == MarkShape.KindText)
+        {
+            DrawTextShapeOnCanvas(s, x0, y0, c, zoom, rgb);
+            return;
+        }
         (int x1, int y1) = ToScreen(s.X1, s.Y1, c, zoom, panX, panY);
+        if (s.Kind == MarkShape.KindMosaic)
+        {
+            DrawMosaicOnCanvas(x0, y0, x1, y1, c);
+            return;
+        }
         DrawMarkShape(new MarkShape(s.Kind, x0, y0, x1, y1), rgb, Math.Max(2, Px(2)));
+    }
+
+    /// <summary>
+    /// 文字标注：按 \n 拆行，逐字用 GDI 生成灰度蒙版再合成。
+    /// 先在最外圈打一遍深色描边，保证白底/彩底/照片上都能读。
+    /// </summary>
+    private void DrawTextShapeOnCanvas(MarkShape s, int x, int y,
+        (int X, int Y, int W, int H) clip, double zoom, int rgb)
+    {
+        if (string.IsNullOrEmpty(s.Text)) return;
+        int dip = Math.Clamp(s.Size > 0 ? s.Size : 20, 8, 96);
+        int fontH = Math.Max(9, (int)Math.Round(dip * zoom * _scale));
+        int weight = fontH >= Px(18) ? 700 : 600;
+        int lineH = (int)Math.Round(fontH * 1.35);
+        int outline = Theme.IsHighContrast ? Theme.Window : 0x1A1E26;
+        string[] lines = s.Text.Replace("\r\n", "\n").Split('\n');
+        int cy = y;
+        foreach (string line in lines)
+        {
+            if (line.Length > 0)
+            {
+                byte[]? mask = BuildTextMask(line, fontH, weight, out int mw, out int mh);
+                if (mask is not null)
+                {
+                    for (int oy = -1; oy <= 1; oy++)
+                        for (int ox = -1; ox <= 1; ox++)
+                            BlitInk(mask, mw, mh, x + ox, cy + oy, outline, 190, clip);
+                    BlitInk(mask, mw, mh, x, cy, rgb, 255, clip);
+                }
+            }
+            cy += lineH;
+        }
+    }
+
+    /// <summary>把灰度蒙版按颜色与不透明度合成到主画布，并裁剪到标注画布区域内。</summary>
+    private void BlitInk(byte[] mask, int mw, int mh, int x, int y, int rgb, int alpha,
+        (int X, int Y, int W, int H) clip)
+    {
+        for (int yy = 0; yy < mh; yy++)
+        {
+            int gy = y + yy;
+            if (gy < clip.Y || gy >= clip.Y + clip.H) continue;
+            for (int xx = 0; xx < mw; xx++)
+            {
+                int gx = x + xx;
+                if (gx < clip.X || gx >= clip.X + clip.W) continue;
+                int a = mask[yy * mw + xx];
+                if (a == 0) continue;
+                PutRgb(gx, gy, rgb, a * alpha / 255);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 马赛克：把区域内的已绘制像素按块取平均再整块填回去。
+    /// 直接读主画布而不是重新采样原图 —— 这样缩放过、被裁剪过的底图也能正确像素化，
+    /// 且与「所见即所得」保存出来的结果完全一致。块大小按屏幕 DIP，缩放时观感稳定。
+    /// </summary>
+    private void DrawMosaicOnCanvas(int x0, int y0, int x1, int y1,
+        (int X, int Y, int W, int H) clip)
+    {
+        int left = Math.Max(clip.X, Math.Min(x0, x1));
+        int right = Math.Min(clip.X + clip.W, Math.Max(x0, x1));
+        int top = Math.Max(clip.Y, Math.Min(y0, y1));
+        int bottom = Math.Min(clip.Y + clip.H, Math.Max(y0, y1));
+        if (right - left < 2 || bottom - top < 2) return;
+
+        int cell = Math.Max(6, Px(12));
+        for (int by = top; by < bottom; by += cell)
+            for (int bx = left; bx < right; bx += cell)
+            {
+                int cw = Math.Min(cell, right - bx), chh = Math.Min(cell, bottom - by);
+                long sr = 0, sg = 0, sb = 0, sa = 0;
+                for (int yy = 0; yy < chh; yy++)
+                    for (int xx = 0; xx < cw; xx++)
+                    {
+                        uint c = _bits[(by + yy) * _widthPx + bx + xx];
+                        int a = (int)((c >> 24) & 0xFF);
+                        if (a == 0) continue;
+                        sb += (long)(c & 0xFF) * a;
+                        sg += (long)((c >> 8) & 0xFF) * a;
+                        sr += (long)((c >> 16) & 0xFF) * a;
+                        sa += a;
+                    }
+                if (sa == 0) continue;
+                int r = (int)(sr / sa), g = (int)(sg / sa), b = (int)(sb / sa);
+                FillRectRgb(bx, by, cw, chh, (r << 16) | (g << 8) | b, 255);
+            }
     }
 
     private void DrawToolImage(string? path, (int X, int Y, int W, int H) r,
@@ -1236,6 +1369,54 @@ internal sealed unsafe class RopeCanvas : IDisposable
                 for (int wx = -half; wx <= half; wx++)
                     PutRgb(x + wx, y + wy, rgb, 255);
         }
+    }
+
+    /// <summary>
+    /// 把一张卡片（连同上方的夹子）复制成独立的 32bpp 顶向下 DIBSection，
+    /// 交给系统的 <c>IDragSourceHelper</c> 当拖拽图。调用方负责 DeleteObject。
+    /// 直接拷预乘 BGRA 原始像素，正是 <c>InitializeFromBitmap</c> 要的 ARGB 布局。
+    /// </summary>
+    internal IntPtr CreateCardDragBitmap(int index, out int width, out int height,
+        out int hotspotX, out int hotspotY)
+    {
+        width = height = hotspotX = hotspotY = 0;
+        if (_bits == null || index < 0 || index >= _cardRects.Count) return IntPtr.Zero;
+        var (x, y, w, h) = _cardRects[index];
+        int left = Math.Clamp(x, 0, Math.Max(0, _widthPx - 1));
+        int clipW = Math.Min(w, _widthPx - left);
+        // 上沿多留 22 DIP，把夹子一起带走，拖拽图里仍是一张「挂在夹子上的照片」。
+        int top = Math.Max(0, y - Px(22));
+        int clipH = Math.Min(y + h - top, _heightPx - top);
+        if (clipW <= 0 || clipH <= 0) return IntPtr.Zero;
+
+        var header = new ShellNative.BITMAPINFOHEADER
+        {
+            BiSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ShellNative.BITMAPINFOHEADER>(),
+            BiWidth = clipW,
+            BiHeight = -clipH,
+            BiPlanes = 1,
+            BiBitCount = 32,
+            BiCompression = 0,
+        };
+        IntPtr dc = ShellNative.CreateCompatibleDC(_screenDc);
+        IntPtr dib = ShellNative.CreateDIBSection(dc, ref header, ShellNative.DibRgbColors,
+            out IntPtr bits, IntPtr.Zero, 0);
+        ShellNative.DeleteDC(dc);
+        if (dib == IntPtr.Zero || bits == IntPtr.Zero) return IntPtr.Zero;
+
+        uint* dst = (uint*)bits;
+        for (int row = 0; row < clipH; row++)
+        {
+            uint* src = _bits + (top + row) * _widthPx + left;
+            uint* drow = dst + row * clipW;
+            for (int col = 0; col < clipW; col++) drow[col] = src[col];
+        }
+
+        width = clipW;
+        height = clipH;
+        hotspotX = clipW / 2;
+        hotspotY = Math.Clamp(y - top + Px(12), 0, clipH);
+        return dib;
     }
 
     /// <summary>导出画布的一个矩形（反预乘后写 PNG），用于「标注保存」与渲染证据。</summary>
