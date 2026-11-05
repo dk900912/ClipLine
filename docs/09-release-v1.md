@@ -94,6 +94,8 @@ Add-AppxPackage -Path .\ClipLine_1.0.0.0_x64.msix
 5. **全局热键注册可能失败**：`RegisterHotKey` 在部分输入法/远程桌面环境会返回 false，代码已做「带 `MOD_NOREPEAT` → 不带」重试，结果写入 `diagnostics.log`（`attach: hotkey=...`）。
 6. **实机矩阵未跑完**：单屏 100/125/150/200% 缩放、深浅色、高对比度、减少动效、常驻内存 ≤ 60 MB、空闲 CPU < 0.1% 仍是手工项（见 `docs/verification/final-report.md` 的 55 项遗留）。
 7. **MSIX 在本机未能安装**：见 §2 的证书链限制。包本身有效，需在受信任环境或管理员下安装。
+8. **「检查更新…」菜单项在 v1 点击无响应**（2026-11-05 复核，用户决定暂不修改）。规格要求该项**只在用户主动点击时**把「版本 + 语言」交给浏览器打开 ClipLine 自己的页面，应用自身零出站（`L-03` / `P-05`）。实际链路：托盘第 15 项 → `AppFacade` 发 `CommandKind.OpenBrowser`，参数仅为纯查询串 `v=0.1.0&lang=zh-Hans`（刻意不含域名，才能满足零 URL 常量门禁）→ `ShellCommandSink` 的 `default` 分支 → `PlatformCommandSink` 用 `Process.Start(查询串)` 启动；该串既非 URL 也非路径，`ShellExecute` 抛异常被内部 `Errors` 吞掉，界面无任何反馈；`RealInputBridge.HandleCommand` 也没有该命令分支。根因是规格中「换成 ClipLine 自己的域名」一直未落地：项目暂无域名，补 URL 常量又会撞 `tools/check-privacy.sh` 的 L-03 门禁；单元测试 `P-05` 只断言命令已发出且不联网，不验证页面能否打开，故 128/128 全绿未暴露。另 `ShellEnvironment.Version` 仍为 `0.1.0`，与发布版 `1.0.0` 不一致（该路径当前无有效触发，未影响其他功能）。
+   **决策**：保持 v1 发布包与源码原样，不重新打包，以免破坏 §4 的「包内 payload 与源码逐字节一致」。后续两种可选修法：① 守住零网络红线，改为本地托盘气泡显示版本与「纯离线、不联网检查更新」；② 提供域名后按原规格拼完整 URL 交给浏览器，URL 基址放配置文件并给 L-03 加白名单。
 
 ## 6. 隐私
 
