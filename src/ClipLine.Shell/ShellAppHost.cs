@@ -60,6 +60,18 @@ public sealed class ShellAppHost : IDisposable
     internal ShellEnvironment Environment => _env;
     internal RealInputBridge? Bridge => _bridge;
 
+    /// <summary>菜单审计：切换无副作用路由，并把「存储到桌面」重定向到隔离目录。</summary>
+    internal void ConfigureAudit(bool dryRun, string desktopDirectory)
+    {
+        _sink.DryRun = dryRun;
+        _sink.SetDesktopDirectory(desktopDirectory);
+    }
+
+    internal void ResetAudit() => _sink.ResetAudit();
+    internal IReadOnlyList<string> AuditUnhandled => _sink.RouteUnhandled;
+    internal IReadOnlyList<string> AuditPlatformErrors => _sink.PlatformErrors;
+    internal IReadOnlyList<string> AuditPlatformUnhandled => _sink.PlatformUnhandled;
+
     /// <summary>菜单「退出 ClipLine」/ 会话结束触发；v0 的「右键即退出」已废弃。</summary>
     public event Action? QuitRequested;
 
@@ -183,6 +195,17 @@ public sealed class ShellAppHost : IDisposable
             case CommandKind.SetTrayTooltip:
                 Tray.SetTooltip((command.Argument ?? "ClipLine").Replace("|", " — "));
                 break;
+            case CommandKind.ReloadThumbnail:
+                // 卡片尺寸变化：按新的 Size 重绘当前帧（GDI 画布不缓存缩略图）。
+                RenderFrame();
+                break;
+            case CommandKind.WatchFolder:
+            case CommandKind.UnwatchFolder:
+            case CommandKind.RegisterClipboardListener:
+            case CommandKind.UnregisterClipboardListener:
+                // 真实监听器只有输入桥这一套，不能让平台层再建第二套实例。
+                _bridge?.HandleCommand(command);
+                break;
             default:
                 _bridge?.HandleCommand(command);
                 break;
@@ -208,6 +231,7 @@ internal sealed class ShellCommandSink : ICommandSink
     private readonly ShellAppHost _host;
     private readonly PlatformCommandSink _platform;
     private readonly List<string> _errors = new();
+    private readonly List<string> _routeUnhandled = new();
 
     internal ShellCommandSink(ShellAppHost host)
     {
@@ -216,9 +240,58 @@ internal sealed class ShellCommandSink : ICommandSink
     }
 
     public IReadOnlyList<string> Errors => _errors;
+    public IReadOnlyList<string> PlatformErrors => _platform.Errors;
+    public IReadOnlyList<string> PlatformUnhandled => _platform.Unhandled;
+    public IReadOnlyList<string> RouteUnhandled => _routeUnhandled;
+
+    /// <summary>审计模式：只判定路由、不产生任何真实副作用（不弹菜单、不开应用、不写注册表）。</summary>
+    public bool DryRun { get; set; }
+
+    public void SetDesktopDirectory(string path) => _platform.DesktopDirectory = path;
+    public void ResetAudit() => _routeUnhandled.Clear();
+
+    private static readonly HashSet<CommandKind> ShellRouted = new()
+    {
+        CommandKind.PresentWindow,
+        CommandKind.SetHitTest,
+        CommandKind.DestroyWindow,
+        CommandKind.SetTrayIcon,
+        CommandKind.SetTrayTooltip,
+        CommandKind.ShowWelcome,
+        CommandKind.ShowInboxOffer,
+        CommandKind.ShowQuickLook,
+        CommandKind.CloseQuickLook,
+        CommandKind.ShowContextMenu,
+        CommandKind.HideTrayMenu,
+        CommandKind.ShowMarkupEditor,
+        CommandKind.ShowTrimEditor,
+        CommandKind.ShowHeldWindow,
+        CommandKind.CloseHeldWindow,
+        CommandKind.WriteClipboardImage,
+        CommandKind.WriteClipboardFile,
+        CommandKind.ShowCopiedBadge,
+        CommandKind.PlaySound,
+        CommandKind.Beep,
+        CommandKind.ShowFolderPicker,
+        CommandKind.ShowShortcutRecorder,
+        CommandKind.ReloadThumbnail,
+        CommandKind.WatchFolder,
+        CommandKind.UnwatchFolder,
+        CommandKind.RegisterClipboardListener,
+        CommandKind.UnregisterClipboardListener,
+    };
+
+    public static bool IsHandled(CommandKind kind) => ShellRouted.Contains(kind);
 
     public void Execute(AppCommand command)
     {
+        if (DryRun)
+        {
+            if (!IsHandled(command.Kind) && !PlatformCommandSink.IsHandled(command.Kind))
+                _routeUnhandled.Add(command.Kind.ToString());
+            return;
+        }
+
         switch (command.Kind)
         {
             case CommandKind.PresentWindow:

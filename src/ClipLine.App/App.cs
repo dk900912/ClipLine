@@ -13,13 +13,15 @@ namespace ClipLine.AppHost;
 public sealed class App : Microsoft.UI.Xaml.Application
 {
     private readonly bool _smoke;
+    private readonly bool _menuAudit;
     private readonly Action<int> _setExitCode;
     private ShellAppHost? _host;
     private DispatcherQueueTimer? _frameTimer;
 
-    public App(bool smoke, Action<int> setExitCode)
+    public App(bool smoke, bool menuAudit, Action<int> setExitCode)
     {
         _smoke = smoke;
+        _menuAudit = menuAudit;
         _setExitCode = setExitCode;
     }
 
@@ -29,6 +31,15 @@ public sealed class App : Microsoft.UI.Xaml.Application
         {
             // 冒烟：在 WinUI 启动路径内同步跑完（无需消息泵），退出码即结论。
             int code = ShellSmoke.Run();
+            _setExitCode(code);
+            Environment.Exit(code);
+            return;
+        }
+
+        if (_menuAudit)
+        {
+            // 菜单全量审计：逐项触发托盘与卡片菜单，真实副作用只写隔离临时目录。
+            int code = MenuAudit.Run();
             _setExitCode(code);
             Environment.Exit(code);
             return;

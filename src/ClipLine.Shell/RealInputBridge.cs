@@ -22,7 +22,7 @@ internal sealed class RealInputBridge : IDisposable
 
     private readonly ShellAppHost _host;
     private readonly SynchronizationContext? _context;
-    private readonly List<FolderWatcher> _watchers = new();
+    private readonly Dictionary<string, FolderWatcher> _watchers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<MenuEntry> _menuEntries = new();
     private string? _lastClipboardHash;
@@ -71,7 +71,7 @@ internal sealed class RealInputBridge : IDisposable
         _host.Tray.SessionEnding += OnSessionEnding;
         _host.Rope.Mouse += OnRopeMouse;
 
-        StartFolderWatchers();
+        SyncWatchers();
         _host.Tray.SetTooltip("ClipLine — 截个图，它就会挂在这里");
         Diag($"attach: clipboard={_clipboardAttached} hotkey={_hotKeyRegistered} " +
              $"syncContext={_context?.GetType().Name ?? "null"} watchers={_watchers.Count}");
@@ -81,25 +81,45 @@ internal sealed class RealInputBridge : IDisposable
     // 目录监听：系统默认截图目录 + ClipLine 自有目录
     // ------------------------------------------------------------------
 
-    private void StartFolderWatchers()
+    /// <summary>
+    /// 按门面当前设置同步唯一一套目录监听器：系统截图目录 + 自有目录 + ExtraFolders。
+    /// 托盘菜单「添加文件夹 / 停止监视」必须走这里，否则会出现平台层另建一套、
+    /// 菜单改了设置而真实监听纹丝不动的情况。
+    /// </summary>
+    private void SyncWatchers()
     {
+        var desired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (string directory in new[]
                  {
                      _host.Environment.ScreenshotsFolder,
                      _host.Environment.OwnDirectory,
-                 }.Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase))
+                 }.Concat(_host.Facade.Current.ExtraFolders))
+        {
+            if (!string.IsNullOrWhiteSpace(directory)) desired.Add(directory);
+        }
+
+        foreach ((string directory, FolderWatcher watcher) in
+                 _watchers.Where(pair => !desired.Contains(pair.Key)).ToArray())
+        {
+            watcher.Dispose();
+            _watchers.Remove(directory);
+            Diag("watch stopped: " + directory);
+        }
+
+        foreach (string directory in desired.Where(d => !_watchers.ContainsKey(d)))
         {
             try
             {
                 Directory.CreateDirectory(directory);
                 var watcher = new FolderWatcher();
+                string captured = directory;
                 watcher.Changed += (path, change, now) =>
                 {
                     Diag($"fs event: {change} {path}");
-                    Post(() => OnFolderChanged(path, change, directory, now));
+                    Post(() => OnFolderChanged(path, change, captured, now));
                 };
                 watcher.Start(directory);
-                _watchers.Add(watcher);
+                _watchers[directory] = watcher;
                 Diag("watch started: " + directory);
             }
             catch (Exception ex)
@@ -108,6 +128,19 @@ internal sealed class RealInputBridge : IDisposable
                 // 目录不可读不影响托盘与主链路；真实错误在诊断日志里单列。
             }
         }
+    }
+
+    /// <summary>「挂上复制的图片」开关：真正挂上/摘掉 WM_CLIPBOARDUPDATE 监听。</summary>
+    private void SyncClipboardListener()
+    {
+        IntPtr hwnd = _host.Tray.HostHandle;
+        if (hwnd == IntPtr.Zero) return;
+        bool want = _host.Facade.Current.ClipboardEnabled;
+        if (want && !_clipboardAttached)
+            _clipboardAttached = ShellNative.AddClipboardFormatListener(hwnd);
+        else if (!want && _clipboardAttached && ShellNative.RemoveClipboardFormatListener(hwnd))
+            _clipboardAttached = false;
+        Diag($"clipboard listener: attached={_clipboardAttached} enabled={want}");
     }
 
     private void OnFolderChanged(string path, FolderChange change, string directory, long nowMs)
@@ -331,7 +364,10 @@ internal sealed class RealInputBridge : IDisposable
         _host.Facade.Handle(new TrayMenuItemInvoked(entry.Action, entry.Argument));
         _host.Facade.AdvanceTo(Environment.TickCount64);
         _host.RenderFrame();
-        if (entry.Action == TrayMenuAction.Quit) _host.RequestQuit();
+        if (entry.Action == TrayMenuAction.Quit) { _host.RequestQuit(); return; }
+        // 设置类菜单（接管截图 / 挂上复制的图片 / 监视文件夹）改完后，
+        // 立刻让真实监听器与门面状态一致，而不是只写进 state.json。
+        SyncWatchers();
     }
 
     private static readonly Dictionary<string, string> ExtraChinese = new(StringComparer.Ordinal)
@@ -415,7 +451,7 @@ internal sealed class RealInputBridge : IDisposable
                 break;
 
             case CommandKind.ShowContextMenu:
-                ShowCardContextMenu();
+                ShowCardContextMenu(argument);
                 break;
 
             case CommandKind.WriteClipboardImage:
@@ -440,6 +476,21 @@ internal sealed class RealInputBridge : IDisposable
 
             case CommandKind.ShowShortcutRecorder:
                 _host.Tray.ShowBalloon("ClipLine 快捷键", "v1 固定为 Ctrl+Alt+T；自定义录制器将在后续版本提供。");
+                break;
+
+            case CommandKind.ShowCopiedBadge:
+                _host.Tray.ShowBalloon("已复制", "图片已写入剪贴板，可直接粘贴。");
+                break;
+
+            case CommandKind.WatchFolder:
+            case CommandKind.UnwatchFolder:
+                // 真实监听器只有这一套：菜单改动后按门面 ExtraFolders 重建。
+                SyncWatchers();
+                break;
+
+            case CommandKind.RegisterClipboardListener:
+            case CommandKind.UnregisterClipboardListener:
+                SyncClipboardListener();
                 break;
 
             default:
@@ -479,22 +530,47 @@ internal sealed class RealInputBridge : IDisposable
         (ContextAction.MoveToRecycleBin, "移到回收站"),
     };
 
-    private void ShowCardContextMenu()
+    private static string LabelFor(ContextAction action)
+    {
+        foreach ((ContextAction candidate, string label) in CardMenuItems)
+            if (candidate == action) return label;
+        return action.ToString();
+    }
+
+    private void ShowCardContextMenu(string? serialized)
     {
         if (_contextItemId == Guid.Empty) return;
         IntPtr menu = ShellNative.CreatePopupMenu();
         if (menu == IntPtr.Zero) return;
         var actions = new Dictionary<int, ContextAction>();
         int id = 2000;
-        bool kept = _host.CurrentView().Cards.Any(c => c.Id == _contextItemId && c.Kept);
-        foreach ((ContextAction action, string label) in CardMenuItems)
+
+        // 门面在 ContextMenuRequested 时已按 G-11…G-18 算好条件显隐，
+        // 这里只做 Win32 协议转换，不再自行硬编码 14 项。
+        var items = new List<(ContextAction Action, string Label, bool Enabled, bool Separator)>();
+        if (!string.IsNullOrEmpty(serialized))
         {
-            if (action == ContextAction.Pin && kept) continue;
-            if (action == ContextAction.Unpin && !kept) continue;
-            if (action == ContextAction.TakeDownRight)
+            foreach (string part in serialized.Split('|', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] fields = part.Split(':');
+                if (fields.Length < 4 || !int.TryParse(fields[0], out int raw)) continue;
+                if (!Enum.IsDefined(typeof(ContextAction), raw)) continue;
+                items.Add(((ContextAction)raw, LabelFor((ContextAction)raw),
+                    fields[2] == "1", fields[3] == "1"));
+            }
+        }
+        if (items.Count == 0) // 参数缺失时回退，保证菜单永远可打开
+            foreach ((ContextAction action, string label) in CardMenuItems)
+                items.Add((action, label, true, action == ContextAction.TakeDownRight));
+
+        foreach ((ContextAction action, string label, bool enabled, bool separator) in items)
+        {
+            if (separator)
                 ShellNative.AppendMenuW(menu, ShellNative.MF_SEPARATOR, IntPtr.Zero, null);
+            uint flags = ShellNative.MF_STRING;
+            if (!enabled) flags |= ShellNative.MF_GRAYED | ShellNative.MF_DISABLED;
             actions[id] = action;
-            ShellNative.AppendMenuW(menu, ShellNative.MF_STRING, new IntPtr(id), label);
+            ShellNative.AppendMenuW(menu, flags, new IntPtr(id), label);
             id++;
         }
 
@@ -557,7 +633,7 @@ internal sealed class RealInputBridge : IDisposable
         _host.Tray.HotKeyPressed -= ToggleLine;
         _host.Tray.SessionEnding -= OnSessionEnding;
         _host.Rope.Mouse -= OnRopeMouse;
-        foreach (FolderWatcher watcher in _watchers) watcher.Dispose();
+        foreach (FolderWatcher watcher in _watchers.Values) watcher.Dispose();
         _watchers.Clear();
     }
 
