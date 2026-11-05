@@ -29,6 +29,11 @@ public sealed class RopeWindow : IDisposable
     private static readonly Dictionary<IntPtr, RopeWindow> Windows = new();
     private static ShellNative.WndProcDelegate? s_proc;
     private static bool s_classRegistered;
+    private static IntPtr s_arrow;
+    private static IntPtr s_hand;
+
+    /// <summary>窗口类注册时写入的系统光标句柄；冒烟用它验证「已显式设置、非等待光标」。</summary>
+    internal static IntPtr ClassCursor => s_arrow;
 
     private readonly double _scale;
     private RopeCanvas? _canvas;
@@ -47,15 +52,22 @@ public sealed class RopeWindow : IDisposable
     /// <summary>真实鼠标输入（已换算成卡片索引与条目 Id）。</summary>
     public event Action<RopeMouseEvent>? Mouse;
 
-    private static void EnsureClass()
+    /// <summary>掉落层复用同一个已注册窗口类（同一 WndProc、同一显式箭头光标）。</summary>
+    internal static void EnsureClass()
     {
         if (s_classRegistered) return;
         s_proc = WndProc; // 保活，防 GC
+        s_arrow = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcArrow);
+        s_hand = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcHand);
+        if (s_hand == IntPtr.Zero) s_hand = s_arrow;
         var wc = new ShellNative.WNDCLASSEXW
         {
             CbSize = (uint)Marshal.SizeOf<ShellNative.WNDCLASSEXW>(),
             LpfnWndProc = Marshal.GetFunctionPointerForDelegate(s_proc),
             HInstance = ShellNative.GetModuleHandleW(null),
+            // hCursor=NULL 时 DefWindowProc 不会重置光标，鼠标会一直带着
+            // 上一个窗口遗留的 IDC_APPSTARTING / IDC_WAIT（经典的加载小圆圈）。
+            HCursor = s_arrow,
             LpszClassName = ClassName,
         };
         if (ShellNative.RegisterClassExW(ref wc) == 0)
@@ -113,8 +125,26 @@ public sealed class RopeWindow : IDisposable
         return -1;
     }
 
+    /// <summary>按命中区域选择光标；纯函数，冒烟可直接断言不会返回等待光标。</summary>
+    internal static IntPtr CursorFor(bool onCard) => onCard ? s_hand : s_arrow;
+
     private static IntPtr WndProc(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam)
     {
+        if (msg == ShellNative.WM_SETCURSOR && Windows.TryGetValue(hWnd, out RopeWindow? cursorWindow))
+        {
+            // lParam 低字是 hit-test，不是坐标；坐标要另取。显式 SetCursor 并返回 TRUE，
+            // 阻止 DefWindowProc 沿用系统等待/启动光标。
+            uint hitTest = (uint)(lParam.ToInt64() & 0xFFFF);
+            if (hitTest == ShellNative.HTCLIENT)
+            {
+                ShellNative.GetCursorPos(out ShellNative.POINT pt);
+                bool onCard = cursorWindow.HitCardIndex(pt.X, pt.Y) >= 0;
+                ShellNative.SetCursor(CursorFor(onCard));
+                return new IntPtr(1);
+            }
+            return ShellNative.DefWindowProcW(hWnd, msg, wParam, lParam);
+        }
+
         if (Windows.TryGetValue(hWnd, out RopeWindow? window))
         {
             long packed = lParam.ToInt64();
@@ -171,6 +201,18 @@ public sealed class RopeWindow : IDisposable
 
     /// <summary>导出当前渲染帧（真实缩略图内容），不依赖屏幕抓屏。</summary>
     public bool DumpFrame(string path) => _canvas?.SavePng(path) ?? false;
+
+    /// <summary>导出帧的局部矩形，用于放大检查小尺寸元素（例如 V-09 绳结）。</summary>
+    public bool DumpFrame(string path, int x, int y, int w, int h) =>
+        _canvas?.SavePng(path, x, y, w, h) ?? false;
+
+    /// <summary>读取帧内单个像素的逻辑 RGBA，供冒烟断言检查色序与亚像素连续性。</summary>
+    public (int R, int G, int B, int A) PixelAt(int x, int y) =>
+        _canvas?.PixelAt(x, y) ?? (0, 0, 0, 0);
+
+    /// <summary>抗锯齿回归证据：矩形内半透明像素数与不同 alpha 级数。</summary>
+    public (int Count, int Levels) AlphaStats(int x0, int y0, int x1, int y1) =>
+        _canvas?.AlphaStats(x0, y0, x1, y1) ?? (0, 0);
 
     /// <summary>门面收起（SetHitTest=passthrough）：立即隐藏。</summary>
     public void Hide()

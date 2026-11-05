@@ -127,12 +127,23 @@ public sealed class Line
         Configure(screenWidthDip, settings.LineSize, settings.KeepOnLine);
     }
 
-    /// <summary>F-11：外部删除/移动文件时对应卡片自动掉落。</summary>
-    public bool RemoveByPath(string path)
+    /// <summary>
+    /// F-11：外部删除/移动文件时对应卡片自动掉落。
+    /// immediate=true 用于「文件已不存在」：直接从集合移除，避免留下 Falling 项
+    /// 让渲染层继续画出幽灵卡片（用户实测的「删了文件绳上还挂着」）。
+    /// 默认保留 V-37 的 0.6 秒空位语义，供主动取下路径使用。
+    /// </summary>
+    public bool RemoveByPath(string path, bool immediate = false)
     {
         string normalized = NormalizePath(path);
         var hit = _items.FirstOrDefault(i => i.IsLive && NormalizePath(i.Path) == normalized);
         if (hit is null) return false;
+        if (immediate)
+        {
+            _items.Remove(hit);
+            ClampScroll();
+            return true;
+        }
         hit.Falling = true;
         return true;
     }

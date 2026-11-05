@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using ClipLine.Application;
 using ClipLine.Domain;
@@ -22,6 +23,16 @@ public sealed class ShellAppHost : IDisposable
     private string _lastSignature = string.Empty;
     private bool _hasRendered;
     private RealInputBridge? _bridge;
+    private readonly RopeMotion _motion;
+    private readonly HashSet<Guid> _knownIds = new();
+    private readonly FallWindow _fallWindow;
+    private readonly ToolHost _tools;
+    private readonly System.Threading.SynchronizationContext? _sync;
+    private UpdateService? _updates;
+    private bool _restartRequested;
+    private readonly List<FallEntry> _falls = new();
+    // 卡片下线前的最后一次屏幕布局，供错峰 60 ms 的批量 StartFall 找到各自起点。
+    private readonly Dictionary<string, (int X, int Y, int W, int H, double Tilt, bool Kept, long AtMs)> _cardLayouts = new();
 
     public ShellAppHost(IClock? clock = null, ShellEnvironment? env = null, string? statePath = null)
     {
@@ -35,6 +46,12 @@ public sealed class ShellAppHost : IDisposable
 
         _clock = clock ?? new SystemClock();
         _env = env ?? ShellEnvironment.CreateDefault();
+        // 更新服务在线程池完成网络/下载，结果必须 Post 回 UI 线程才算「同一个门面」。
+        _sync = System.Threading.SynchronizationContext.Current;
+        // 注入时钟 = 冒烟/单测，阵风随机源固定成可复现序列；真实运行用时间种子。
+        _motion = new RopeMotion(clock is null ? 0 : 20261105);
+        _fallWindow = new FallWindow(_scale);
+        _tools = new ToolHost(this);
         Directory.CreateDirectory(_env.OwnDirectory);
         Directory.CreateDirectory(_env.ScreenshotsFolder);
 
@@ -52,6 +69,20 @@ public sealed class ShellAppHost : IDisposable
     public AppFacade Facade { get; }
     public RopeWindow Rope { get; }
     public ShellTray Tray { get; }
+    /// <summary>四个系统替身窗口；真实点击验证与冒烟都从这里观察外部可见行为。</summary>
+    internal ToolHost Tools => _tools;
+
+    /// <summary>自动更新服务：结果以离散事件 Post 回唯一门面，不新增第二个接缝。</summary>
+    internal UpdateService Updates => _updates ??= new UpdateService(DispatchInput, _env.IsPackaged);
+
+    private void DispatchInput(AppInput input)
+    {
+        if (_sync is not null) _sync.Post(_ => Facade.Handle(input), null);
+        else Facade.Handle(input);
+    }
+
+    /// <summary>更新已交给一次性 helper，主进程需退出以便替换文件 / 注册新包。</summary>
+    public event Action? RestartRequested;
     public double Scale => _scale;
     /// <summary>状态文件路径；冒烟注入隔离路径，避免读写真实用户设置。</summary>
     public string StatePath { get; }
@@ -59,6 +90,9 @@ public sealed class ShellAppHost : IDisposable
     public IReadOnlyList<string> SinkErrors => _sink.Errors;
     internal ShellEnvironment Environment => _env;
     internal RealInputBridge? Bridge => _bridge;
+    /// <summary>掉落层当前是否可见（冒烟/验证用的可观察行为，不是新接缝）。</summary>
+    internal bool FallWindowVisible => _fallWindow.IsVisible;
+    internal bool DumpFallFrame(string path) => _fallWindow.DumpFrame(path);
 
     /// <summary>菜单审计：切换无副作用路由，并把「存储到桌面」重定向到隔离目录。</summary>
     internal void ConfigureAudit(bool dryRun, string desktopDirectory)
@@ -100,6 +134,12 @@ public sealed class ShellAppHost : IDisposable
         _bridge.Attach();
     }
 
+    /// <summary>
+    /// 输入桥在离散事件后推进门面时钟。统一走注入的时钟，
+    /// 避免桥里硬编码 Environment.TickCount64 让假时钟测试失效。
+    /// </summary>
+    internal void AdvanceFrame() => Facade.AdvanceTo(_clock.NowMs);
+
     /// <summary>一帧：物理像素指针进门面（换算 DIP），推进时钟，再做卡片级命中切换。</summary>
     public void Tick(int pointerXpx, int pointerYpx)
     {
@@ -117,12 +157,124 @@ public sealed class ShellAppHost : IDisposable
     /// </summary>
     public void RenderFrame()
     {
+        AdvanceMotion();
+        RenderFalls();
+        StateSnapshot state = Facade.Current;
+        // 安装器已由一次性 helper 接管：主进程必须退出，helper 才能替换文件 / 注册新包并重启。
+        if (!_restartRequested && state.Update.Phase == UpdatePhase.Installing)
+        {
+            _restartRequested = true;
+            RestartRequested?.Invoke();
+            return;
+        }
+        if (!Rope.IsVisible && state.IsPresent && state.IsRevealed)
+        {
+            // 收起后 DestroyDelayMs(0.3 s) 内又被唤出（热区 / 「放回绳上」/ 新图）
+            // 时，门面仍认为窗口存在，不会重发 PresentWindow；SetHitTest=cards
+            // 只改命中不改可见性，而 DestroyElapsed 又因 _isRevealed=true 跳过销毁，
+            // 分层窗口会永久停在隐藏态 —— 表现为「鼠标到顶部也唤不出绳子」。
+            // 渲染壳按状态帧自愈：状态说要展开，窗口就必须可见。
+            RopeFrame restored = CurrentView();
+            _lastSignature = restored.Signature;
+            _hasRendered = true;
+            Rope.Present(restored);
+            RememberLayouts(restored);
+            return;
+        }
         if (!Rope.IsVisible) return;
         RopeFrame frame = CurrentView();
         if (_hasRendered && frame.Signature == _lastSignature) return;
         _lastSignature = frame.Signature;
         _hasRendered = true;
         Rope.Present(frame);
+        RememberLayouts(frame);
+    }
+
+    /// <summary>
+    /// 掉落层每帧推进：把到期的移除，其余按 raw³ 交给 FallWindow 绘制。
+    /// 没有活跃掉落时隐藏窗口，合成器与 CPU 完全空闲。
+    /// </summary>
+    private void RenderFalls()
+    {
+        long now = _clock.NowMs;
+        for (int i = _falls.Count - 1; i >= 0; i--)
+            if (now - _falls[i].StartMs >= _falls[i].DurationMs) _falls.RemoveAt(i);
+        if (_falls.Count == 0)
+        {
+            if (_fallWindow.IsVisible) _fallWindow.Hide();
+            return;
+        }
+        var cards = new List<FallCard>(_falls.Count);
+        foreach (FallEntry f in _falls)
+            cards.Add(new FallCard(f.Path, f.X, f.Y, f.W, f.H, f.Tilt, f.Kept,
+                (now - f.StartMs) / (double)f.DurationMs));
+        _fallWindow.Present(cards);
+    }
+
+    /// <summary>把当前帧的卡片几何记住，供随后到达的 StartFall 定位（批量错峰会晚于帧更新）。</summary>
+    private void RememberLayouts(RopeFrame frame)
+    {
+        var rects = Rope.CardRects;
+        int n = Math.Min(frame.Cards.Count, rects.Count);
+        long now = _clock.NowMs;
+        for (int i = 0; i < n; i++)
+        {
+            CardVisual c = frame.Cards[i];
+            var r = rects[i];
+            _cardLayouts[c.Path] = (r.X, r.Y, r.W, r.H, c.Tilt, c.Kept, now);
+        }
+        if (_cardLayouts.Count <= 48) return;
+        var stale = new List<string>();
+        foreach (var pair in _cardLayouts)
+            if (now - pair.Value.AtMs > 3000) stale.Add(pair.Key);
+        foreach (string key in stale) _cardLayouts.Remove(key);
+    }
+
+    /// <summary>消费门面 StartFall：取该卡下线前的最后位置，排队一次 0.55 s 的翻落。</summary>
+    private void BeginFall(AppCommand command)
+    {
+        if (string.IsNullOrEmpty(command.Argument) || _env.ReduceMotion) return;
+        long now = _clock.NowMs;
+        long duration = command.Number > 0 ? (long)command.Number : Layout.FallMs;
+        if (_cardLayouts.TryGetValue(command.Argument, out var layout))
+        {
+            _falls.Add(new FallEntry(command.Argument, layout.X, layout.Y, layout.W, layout.H,
+                layout.Tilt, layout.Kept, now, duration));
+        }
+        else
+        {
+            // 兜底：没有布局快照时按屏幕中间的中档卡片落下，保证动作仍然可见。
+            int w = (int)Math.Round(Layout.CardWidth(CardSize.Medium) * _scale);
+            int h = (int)Math.Round(Layout.PhotoMaxHeight(CardSize.Medium) * _scale);
+            int x = (ShellNative.GetSystemMetrics(ShellNative.SM_CXSCREEN) - w) / 2;
+            int y = (int)Math.Round((Layout.RopeTop + 12) * _scale);
+            _falls.Add(new FallEntry(command.Argument, x, y, w, h, 0, false, now, duration));
+        }
+        if (_falls.Count > 24) _falls.RemoveRange(0, _falls.Count - 24);
+    }
+
+    /// <summary>
+    /// 每帧同步绳上卡片与摆动模型：新卡触发 16° 摆入 + 46 DIP 落下，
+    /// 到点的阵风派发 nudge，减少动效时整体静止。
+    /// 内容指纹里带上摆角/落下量后，动画活跃期间签名逐帧变化，天然绕过 RenderFrame 去重；
+    /// 静止时摆角恒等于静态倾角，签名稳定，不产生任何额外重绘。
+    /// </summary>
+    private void AdvanceMotion()
+    {
+        StateSnapshot s = Facade.Current;
+        _motion.ReduceMotion = _env.ReduceMotion;
+        var ids = new List<Guid>(s.Items.Count);
+        foreach (ItemSnapshot item in s.Items)
+        {
+            ids.Add(item.Id);
+            if (_knownIds.Add(item.Id)) _motion.OnNewItem(item.Id, _clock.NowMs);
+        }
+        if (_knownIds.Count != ids.Count)
+        {
+            var live = new HashSet<Guid>(ids);
+            _knownIds.RemoveWhere(id => !live.Contains(id));
+        }
+        _motion.Advance(_clock.NowMs, ids, s.IsDragging);
     }
 
     /// <summary>
@@ -134,8 +286,10 @@ public sealed class ShellAppHost : IDisposable
     {
         if (!Facade.Current.IsPresent || Rope.IsVisible) return;
         _cardsHitEnabled = true;
+        AdvanceMotion();
         RopeFrame frame = CurrentView();
         Rope.Present(frame);
+        RememberLayouts(frame);
         _lastSignature = frame.Signature;
         _hasRendered = true;
     }
@@ -158,11 +312,20 @@ public sealed class ShellAppHost : IDisposable
         signature.Append((int)s.Size).Append('/').Append(s.VisibleCount).Append('/')
             .Append(s.Items.Count).Append('/').Append(kept).Append('/')
             .Append(s.IsRevealed ? 1 : 0).Append('/').Append(s.Scroll);
+        long nowMs = _clock.NowMs;
         foreach (ItemSnapshot item in s.Items)
         {
-            cards.Add(new CardVisual(item.Id, item.Path, item.Kept));
+            // 静态倾角 ±2.5° 来自 Pegged.Tilt，动态摆角来自 RopeMotion；
+            // 两者相加才是 Swift 的 rotationEffect(.degrees(swing + item.tilt))。
+            double swing = _motion.AngleFor(item.Id, nowMs) + item.Tilt;
+            double drop = _motion.DropDipFor(item.Id, nowMs);
+            cards.Add(new CardVisual(item.Id, item.Path, item.Kept, item.CopiedBadge,
+                swing, drop, item.Tilt));
             signature.Append('|').Append(item.Id).Append(':').Append(item.Path)
-                .Append(':').Append(item.Kept ? 1 : 0).Append(item.Held ? 1 : 0);
+                .Append(':').Append(item.Kept ? 1 : 0).Append(item.Held ? 1 : 0)
+                .Append(item.CopiedBadge ? 'C' : '-')
+                .Append(':').Append(swing.ToString("F2", CultureInfo.InvariantCulture))
+                .Append(':').Append(drop.ToString("F1", CultureInfo.InvariantCulture));
         }
         return new RopeFrame(s.Size, s.VisibleCount, s.Items.Count, kept, cards, signature.ToString());
     }
@@ -173,9 +336,12 @@ public sealed class ShellAppHost : IDisposable
         {
             case CommandKind.PresentWindow:
                 _cardsHitEnabled = true;
-                _lastSignature = CurrentView().Signature;
+                AdvanceMotion();
+                RopeFrame presented = CurrentView();
+                _lastSignature = presented.Signature;
                 _hasRendered = true;
-                Rope.Present(CurrentView());
+                Rope.Present(presented);
+                RememberLayouts(presented);
                 break;
             case CommandKind.SetHitTest:
                 _cardsHitEnabled = command.Argument == "cards";
@@ -199,6 +365,25 @@ public sealed class ShellAppHost : IDisposable
                 // 卡片尺寸变化：按新的 Size 重绘当前帧（GDI 画布不缓存缩略图）。
                 RenderFrame();
                 break;
+            case CommandKind.ShowCopiedBadge:
+                // 复制反馈只有「已复制」角标 + 3° 轻摆 + 本次重绘；
+                // 不再转发输入桥弹通知窗（与角标重复，见 RealInputBridge）。
+                if (Guid.TryParse(command.Argument, out Guid copiedId))
+                    _motion.OnCopied(copiedId, _clock.NowMs);
+                RenderFrame();
+                break;
+            case CommandKind.HideCopiedBadge:
+                // 角标 1.2 秒后消失，不等下一帧驱动。
+                _bridge?.HandleCommand(command);
+                RenderFrame();
+                break;
+            case CommandKind.StartFall:
+                BeginFall(command);
+                break;
+            case CommandKind.StartFlight:
+                // 截图飞入仍属渲染壳遗留项（docs/08）；在这里显式吃掉，
+                // 不落到平台层被误记为未处理命令，也不引入第二个测试接缝。
+                break;
             case CommandKind.WatchFolder:
             case CommandKind.UnwatchFolder:
             case CommandKind.RegisterClipboardListener:
@@ -220,10 +405,16 @@ public sealed class ShellAppHost : IDisposable
         _disposed = true;
         _bridge?.Dispose();
         Rope.Dispose();
+        _fallWindow.Dispose();
+        _tools.Dispose();
         Tray.Dispose();
         _sink.Dispose();
     }
 }
+
+/// <summary>一次排队中的掉落；坐标是绳窗口客户区物理像素。</summary>
+internal sealed record FallEntry(string Path, int X, int Y, int W, int H,
+    double Tilt, bool Kept, long StartMs, long DurationMs);
 
 /// <summary>组合命令接收器：渲染/托盘/交互给壳，其余给平台层；平台异常记录而不是让门面崩掉。</summary>
 internal sealed class ShellCommandSink : ICommandSink
@@ -270,15 +461,22 @@ internal sealed class ShellCommandSink : ICommandSink
         CommandKind.WriteClipboardImage,
         CommandKind.WriteClipboardFile,
         CommandKind.ShowCopiedBadge,
+        CommandKind.HideCopiedBadge,
         CommandKind.PlaySound,
         CommandKind.Beep,
         CommandKind.ShowFolderPicker,
         CommandKind.ShowShortcutRecorder,
         CommandKind.ReloadThumbnail,
+        CommandKind.StartFall,
+        CommandKind.StartFlight,
         CommandKind.WatchFolder,
         CommandKind.UnwatchFolder,
         CommandKind.RegisterClipboardListener,
         CommandKind.UnregisterClipboardListener,
+        CommandKind.RunUpdateCheck,
+        CommandKind.DownloadUpdate,
+        CommandKind.InstallUpdate,
+        CommandKind.ShowUpdateNotice,
     };
 
     public static bool IsHandled(CommandKind kind) => ShellRouted.Contains(kind);
@@ -315,10 +513,17 @@ internal sealed class ShellCommandSink : ICommandSink
             case CommandKind.WriteClipboardImage:
             case CommandKind.WriteClipboardFile:
             case CommandKind.ShowCopiedBadge:
+            case CommandKind.HideCopiedBadge:
             case CommandKind.PlaySound:
             case CommandKind.Beep:
             case CommandKind.ShowFolderPicker:
             case CommandKind.ShowShortcutRecorder:
+            case CommandKind.StartFall:
+            case CommandKind.StartFlight:
+            case CommandKind.RunUpdateCheck:
+            case CommandKind.DownloadUpdate:
+            case CommandKind.InstallUpdate:
+            case CommandKind.ShowUpdateNotice:
                 _host.OnShellCommand(command);
                 break;
             default:

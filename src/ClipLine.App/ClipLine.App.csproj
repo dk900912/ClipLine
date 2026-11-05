@@ -48,6 +48,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ClipLine.Shell\ClipLine.Shell.csproj" />
+    <!-- 自动更新的服务端地址放在配置而非源码里，保证源码零 URL 常量（L-03 新口径）。 -->
+    <Content Include="..\..\packaging\update-config.json" Link="update-config.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\packaging\update-helper.ps1" Link="update-helper.ps1"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

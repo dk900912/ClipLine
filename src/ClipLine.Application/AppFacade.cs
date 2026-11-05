@@ -222,6 +222,7 @@ public sealed partial class AppFacade
         HighContrast = _env.IsHighContrast,
         ActiveFlights = _activeFlights,
         WelcomePinned = _welcomePinned,
+        Update = _update,
     };
 
     private void Dispatch(AppInput input)
@@ -257,7 +258,12 @@ public sealed partial class AppFacade
             case AddWatchedFolder e: OnAddWatchedFolder(e); break;
             case RemoveWatchedFolder e: OnRemoveWatchedFolder(e); break;
             case OpenScreenshotsFolder: Emit(CommandKind.OpenFolder, _env.ScreenshotsFolder); break;
-            case CheckForUpdates: Emit(CommandKind.OpenBrowser, $"v={_env.Version}&lang={_settings.Language}"); break;
+            case CheckForUpdates: OnUpdateCheck(true); break;
+            case AutoUpdateTick: OnUpdateCheck(false); break;
+            case UpdateCheckCompleted e: OnUpdateCheckCompleted(e); break;
+            case UpdateProgress e: OnUpdateProgress(e); break;
+            case UpdateDownloadCompleted e: OnUpdateDownloadCompleted(e); break;
+            case UpdateInstallCompleted e: OnUpdateInstallCompleted(e); break;
 
             case HotZoneElapsed e: OnHotZoneElapsed(e); break;
             case RetractElapsed e:
@@ -399,7 +405,11 @@ public sealed partial class AppFacade
     private void OnHotZoneElapsed(HotZoneElapsed e)
     {
         if (e.Token != _hotZoneToken) return;
-        if (!_settings.RevealOnPointer || _line.IsEmpty || _blocked) return;
+        if (!_settings.RevealOnPointer || _blocked) return;
+        // 空绳也要能被顶部中间热区唤出（v1.1 用户要求）。
+        // mac v1.8.1 的 AppDelegate 用 `line.liveCount > 0` 挡住空绳，这里是有意放宽：
+        // 指针停在热区时 CanHideIgnoringPeek() 因 _pointerInHotZone 为 true 而不会收起，
+        // 离开后由 RetractElapsed 在 500 ms 自动收回，不需要额外的常驻状态。
         Reveal(false);
     }
 
@@ -425,6 +435,20 @@ public sealed partial class AppFacade
         Reveal(true);
     }
 
+    /// <summary>确定性「随机」静态倾角，范围与 Swift 的 random(-2.5...2.5) 一致。</summary>
+    private static double RestingTilt(string path, long nowMs)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (char c in path) { hash ^= c; hash *= 16777619; }
+            hash ^= (uint)nowMs;
+            hash *= 16777619;
+            double unit = (hash & 0xFFFF) / (double)0xFFFF;
+            return Layout.MinTilt + unit * (Layout.MaxTilt - Layout.MinTilt);
+        }
+    }
+
     private void OnNewItem(NewItem e)
     {
         if (string.IsNullOrWhiteSpace(e.Path)) return;
@@ -438,7 +462,9 @@ public sealed partial class AppFacade
             ByHand = e.ByHand,
             Kept = e.ByHand,
             InOwnDirectory = e.InOwnDirectory,
-            Tilt = e.Tilt,
+            // Mac 的 Pegged 在创建时取 random(-2.5...2.5) 的静态倾角；
+            // 门面必须保持确定性，改用 path+时间 的 FNV 哈希映射到同一区间。
+            Tilt = e.Tilt != 0 ? e.Tilt : RestingTilt(e.Path, _nowMs),
             CreatedAtMs = _nowMs,
         };
         var outcome = _line.Hang(item);
@@ -529,7 +555,10 @@ public sealed partial class AppFacade
 
     private void OnFileDisappeared(FileDisappeared e)
     {
-        if (!_line.RemoveByPath(e.Path)) return;
+        // F-11：文件已在磁盘上消失，卡片必须立刻从状态集合里下线。
+        // 不能只标 Falling —— 渲染层会继续画出来，且这里原本没有排
+        // GapCloseElapsed，幽灵卡片就永远留在绳上。
+        if (!_line.RemoveByPath(e.Path, immediate: true)) return;
         Emit(CommandKind.StartFall, e.Path, Layout.FallMs);
         UpdateTray();
         Persist();

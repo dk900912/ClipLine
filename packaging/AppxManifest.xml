@@ -17,7 +17,7 @@
     <DisplayName>ClipLine</DisplayName>
     <PublisherDisplayName>ClipLine</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
-    <Description>Windows 11 原生的截图晾衣绳；纯本地运行、无网络、无账号。</Description>
+    <Description>Windows 11 原生的截图晾衣绳；本地优先、无账号、无遥测，仅在检查更新时访问 GitHub Release。</Description>
   </Properties>
 
   <Dependencies>

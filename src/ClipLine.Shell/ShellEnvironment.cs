@@ -85,6 +85,9 @@ public class ShellEnvironment : IEnvironment
     public virtual bool CanDecode(string path) => Domain.CaptureIntegrity.IsSupported(path);
     public string OwnDirectory { get; }
     public string ScreenshotsFolder { get; }
-    public virtual string Version => "0.1.0";
+    public virtual string Version => Domain.BuildInfo.Version;
+    /// <summary>MSIX 包与便携版唯一的形态差异：包内根目录带 AppxManifest.xml。</summary>
+    public virtual bool IsPackaged => File.Exists(
+        Path.Combine(AppContext.BaseDirectory, "AppxManifest.xml"));
     public virtual double SystemDoubleClickIntervalMs => ShellNative.GetDoubleClickTime();
 }

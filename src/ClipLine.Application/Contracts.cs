@@ -93,6 +93,39 @@ public enum CommandKind
     ApplyLocalizedText,
     ShowShortcutRecorder,
     ShowFolderPicker,
+    // ---- 自动更新（v1.5 / 方案 D，双通道）----
+    RunUpdateCheck,
+    DownloadUpdate,
+    InstallUpdate,
+    ShowUpdateNotice,
+}
+
+/// <summary>自动更新的外部可观察阶段；Idle/Offline 不打扰用户。</summary>
+public enum UpdatePhase
+{
+    Idle,
+    Checking,
+    Available,
+    Downloading,
+    Verifying,
+    Ready,
+    Installing,
+    UpToDate,
+    Failed,
+    Offline,
+}
+
+/// <summary>更新状态快照的一部分，唯一接缝的「出」。</summary>
+public sealed record UpdateSnapshot
+{
+    public UpdatePhase Phase { get; init; } = UpdatePhase.Idle;
+    public string CurrentVersion { get; init; } = string.Empty;
+    public string AvailableVersion { get; init; } = string.Empty;
+    public string Channel { get; init; } = "portable";
+    public string LocalPackage { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+    public int Progress { get; init; }
+    public bool Manual { get; init; }
 }
 
 public sealed record AppCommand(CommandKind Kind, string? Argument = null, double Number = 0);
@@ -149,6 +182,7 @@ public sealed record StateSnapshot
     public bool HighContrast { get; init; }
     public int ActiveFlights { get; init; }
     public bool WelcomePinned { get; init; }
+    public UpdateSnapshot Update { get; init; } = new();
 }
 
 public sealed record AppResult(StateSnapshot State, IReadOnlyList<AppCommand> Commands);
@@ -193,6 +227,19 @@ public sealed record RemoveWatchedFolder(string Path) : AppInput;
 public sealed record OpenScreenshotsFolder : AppInput;
 public sealed record CheckForUpdates : AppInput;
 
+// ---- 自动更新：离散事件进、命令出，网络与安装全部留在平台层 ----
+/// <summary>启动后一次性自动检查（非轮询）；由组合根在延迟后送入。</summary>
+public sealed record AutoUpdateTick : AppInput;
+/// <summary>更新服务回灌的检查结果；Error 非空表示离线或失败。</summary>
+public sealed record UpdateCheckCompleted(
+    string? Version, string? AssetUrl, string? Sha256Url, string? Error) : AppInput;
+/// <summary>下载阶段的进度，仅用于状态快照，不触发命令。</summary>
+public sealed record UpdateProgress(int Percent) : AppInput;
+/// <summary>下载 + SHA-256 校验完成；LocalPackage 是可安装的本地文件。</summary>
+public sealed record UpdateDownloadCompleted(string LocalPackage, string? Error) : AppInput;
+/// <summary>安装执行结果；成功时便携通道已由 helper 重启应用。</summary>
+public sealed record UpdateInstallCompleted(bool Success, string? Error) : AppInput;
+
 // ---- 内部调度事件（假时钟推进时触发，外部不构造） ----
 internal sealed record HotZoneElapsed(long Token) : AppInput;
 internal sealed record RetractElapsed(long Token) : AppInput;
@@ -223,6 +270,8 @@ public interface IEnvironment
     string OwnDirectory { get; }
     string ScreenshotsFolder { get; }
     string Version { get; }
+    /// <summary>是否以 MSIX 包形态运行；决定自动更新走 PackageManager 还是便携 helper。默认实现避免破坏既有 fake。</summary>
+    bool IsPackaged => false;
     double SystemDoubleClickIntervalMs { get; }
 }
 

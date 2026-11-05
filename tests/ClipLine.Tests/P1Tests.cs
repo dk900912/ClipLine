@@ -49,8 +49,10 @@ public sealed class P1Tests : ITestSuite
 
         t.Case("V-28", "丢弃下落角度公式", () =>
         {
-            double expected = 2.5 + (2.5 * 7 + 20) * Math.Pow(Math.E, 3);
-            Check.Near(expected, Layout.FallTilt(2.5), 0.0001, "tilt + (tilt×7+20)·e³");
+            // Swift: angle = tilt + (tilt*7 + 20) * e，e = raw³，终态 e = 1。
+            double expected = 2.5 + (2.5 * 7 + 20) * 1.0;
+            Check.Near(expected, Layout.FallTilt(2.5), 0.0001, "tilt + (tilt×7+20)·raw³ 的终值");
+            Check.Near(-2.5 * 8 + 20, Layout.FallTilt(-2.5), 0.0001, "负倾角终值");
         });
 
         t.Case("V-33", "满绳一次只挤掉 1 张", () =>
@@ -169,13 +171,26 @@ public sealed class P1Tests : ITestSuite
             Check.True(f.State.IsRevealed, "250 ms 展开");
         });
 
-        t.Case("S-03b", "空绳不被热区唤出", () =>
+        t.Case("S-03b", "空绳也能被顶部热区唤出", () =>
         {
             var f = new Fixture();
             f.Start();
             f.Send(new PointerMoved(640, 4));
             f.Advance(300);
-            Check.False(f.State.IsRevealed, "绳上为空时热区无效");
+            Check.True(f.State.IsRevealed, "绳上为空时热区同样生效");
+            Check.True(f.State.IsPresent, "空绳窗口已呈现");
+        });
+
+        t.Case("S-03c", "空绳唤出后指针离开会自动收起", () =>
+        {
+            var f = new Fixture();
+            f.Start();
+            f.Send(new PointerMoved(640, 4));
+            f.Advance(300);
+            Check.True(f.State.IsRevealed, "先展开空绳");
+            f.Send(new PointerMoved(10, 600));
+            f.Advance(500);
+            Check.False(f.State.IsRevealed, "离开 0.5 s 后收回");
         });
 
         t.Case("S-04", "离开 0.5 秒收起", () =>
@@ -511,14 +526,16 @@ public sealed class P1Tests : ITestSuite
             Check.True(f.Send(new SetKeepOnLine(37)).Has(CommandKind.Beep), "非法值蜂鸣");
         });
 
-        t.Case("P-05", "检查更新只发浏览器命令，应用不联网", () =>
+        t.Case("P-05", "检查更新只发 RunUpdateCheck 命令，门面不联网", () =>
         {
             var f = new Fixture();
             f.Start();
             var r = f.Send(new CheckForUpdates());
             Check.Equal(1, r.Commands.Count, "只有一条命令");
-            Check.True(r.Has(CommandKind.OpenBrowser), "交给浏览器");
-            Check.Contains("lang=zh-Hans", r.Arg(CommandKind.OpenBrowser), "带版本与语言");
+            Check.True(r.Has(CommandKind.RunUpdateCheck), "交给平台层更新服务");
+            Check.Equal("manual", r.Arg(CommandKind.RunUpdateCheck), "标记为手动触发");
+            Check.Equal(UpdatePhase.Checking, r.State.Update.Phase, "状态进入检查中");
+            Check.True(!r.Has(CommandKind.OpenBrowser), "不再发无效的浏览器查询串");
         });
 
         t.Case("G-17", "取下左右邻居只作用于普通照片", () =>

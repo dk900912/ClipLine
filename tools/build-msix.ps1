@@ -12,10 +12,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
+# Single source of truth: src/ClipLine.Domain/BuildInfo.cs drives the product
+# version, the MSIX Identity version, the asset filenames and the Release tag.
+$buildInfo = Get-Content (Join-Path $root 'src\ClipLine.Domain\BuildInfo.cs') -Raw
+$relVer = [regex]::Match($buildInfo, '(?<![A-Za-z])Version\s*=\s*"([^"]+)"').Groups[1].Value
+$msixVer = [regex]::Match($buildInfo, 'MsixVersion\s*=\s*"([^"]+)"').Groups[1].Value
+if (-not $relVer -or -not $msixVer) { throw 'Cannot read version from BuildInfo.cs' }
+Write-Output "[version] product=$relVer msix=$msixVer tag=v$relVer"
 $stage = Join-Path $dist 'msix-stage-v1'
-$portable = Join-Path $dist 'ClipLine_1.0.0.0_x64_portable'
-$msix = Join-Path $dist 'ClipLine_1.0.0.0_x64.msix'
-$zip = Join-Path $dist 'ClipLine_1.0.0.0_x64_portable.zip'
+$portable = Join-Path $dist "ClipLine_${msixVer}_x64_portable"
+$msix = Join-Path $dist "ClipLine_${msixVer}_x64.msix"
+$zip = Join-Path $dist "ClipLine_${msixVer}_x64_portable.zip"
 $cer = Join-Path $dist 'ClipLine.cer'
 $pfx = Join-Path $dist 'ClipLine.pfx'
 $pfxPassword = 'ClipLineV1Local'
@@ -53,7 +60,15 @@ Get-ChildItem $outputDir -Force | Where-Object {
     }
     else { $_.Extension -ne '.pdb' }
 } | ForEach-Object { Copy-Item $_.FullName -Destination $stage -Recurse -Force }
-Copy-Item (Join-Path $root 'packaging\AppxManifest.xml') -Destination (Join-Path $stage 'AppxManifest.xml') -Force
+# Inject the MSIX Identity version (do NOT touch MinVersion/MaxVersionTested).
+# The manifest contains Chinese text: Get-Content -Raw would decode it as ANSI
+# in Windows PowerShell 5.1 and corrupt the XML (makeappx C00CEE3B).
+$utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
+$manifestText = [System.IO.File]::ReadAllText(
+    (Join-Path $root 'packaging\AppxManifest.xml'), [System.Text.Encoding]::UTF8)
+$manifestText = [regex]::Replace($manifestText,
+    '(<Identity[^>]*?\bVersion=")[\d.]+(")', '${1}' + $msixVer + '${2}')
+[System.IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifestText, $utf8)
 
 # ---- 3. rasterize E "double line" brand assets ----
 [void][Reflection.Assembly]::LoadWithPartialName('System.Drawing')
@@ -133,6 +148,26 @@ $zipInfo = Get-Item $zip
 Write-Output "PORTABLE=$($zipInfo.FullName)"
 Write-Output "PORTABLE_SIZE=$([Math]::Round($zipInfo.Length / 1MB, 2)) MB"
 Write-Output "PORTABLE_SHA256=$((Get-FileHash $zip -Algorithm SHA256).Hash)"
+
+# ---- 5c. GitHub Release assets: SHA-256 sidecars + asset list ----
+# The updater downloads <asset> and <asset>.sha256 and refuses to install on mismatch.
+$releaseAssets = @($msix, $zip)
+foreach ($asset in $releaseAssets) {
+    $hash = (Get-FileHash $asset -Algorithm SHA256).Hash
+    $name = Split-Path $asset -Leaf
+    [System.IO.File]::WriteAllText(($asset + '.sha256'), ($hash + '  ' + $name + "`r`n"), $utf8)
+    Write-Output "ASSET_SHA256=$name $hash"
+}
+$assetList = Join-Path $dist 'release-assets.txt'
+$lines = New-Object System.Collections.Generic.List[string]
+$lines.Add("TAG=v$relVer")
+foreach ($asset in $releaseAssets) {
+    $name = Split-Path $asset -Leaf
+    $lines.Add($asset)
+    $lines.Add($asset + '.sha256')
+}
+[System.IO.File]::WriteAllLines($assetList, $lines, $utf8)
+Write-Output "RELEASE_ASSETS=$assetList"
 
 # ---- 6. optional local install ----
 if ($Install) {

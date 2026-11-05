@@ -1,0 +1,12 @@
+{
+  "apiBase": "https://api.github.com",
+  "repo": "dk900912/ClipLine",
+  "allowHosts": [
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "localhost",
+    "127.0.0.1"
+  ]
+}

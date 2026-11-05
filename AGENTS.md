@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs live in GitHub Issues (`dk900912/ClipLine`, private), read and written through the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and specs live in GitHub Issues (`dk900912/ClipLine`, public), read and written through the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace ClipLine.Shell;
 
@@ -296,28 +297,80 @@ internal static class GdiPlus
         finally { if (bitmap != IntPtr.Zero) GdipDisposeImage(bitmap); }
     }
 
-    /// <summary>右键「复制」：把图片文件以 CF_BITMAP 放回系统剪贴板。</summary>
-    internal static bool CopyFileToClipboard(string path)
+    /// <summary>
+    /// 「复制」：把同一张图片写成剪贴板的两种标准格式。
+    /// CF_BITMAP → 粘贴到聊天 / 画图 / 文档等图片目标；
+    /// CF_HDROP  → 资源管理器 Ctrl+V 只认文件列表，仅有位图时不会有任何反应。
+    /// 先写位图再写文件列表，让按格式枚举优先级挑内容的应用优先拿到图片。
+    /// includeBitmap=false 用于 D-11（录屏只放文件引用）。
+    /// </summary>
+    internal static bool CopyFileToClipboard(string path, bool includeBitmap = true)
     {
         if (!File.Exists(path)) return false;
         EnsureStarted();
         IntPtr bitmap = IntPtr.Zero;
+        IntPtr hBitmap = IntPtr.Zero;
+        IntPtr hDrop = IntPtr.Zero;
+        bool bitmapTransferred = false, dropTransferred = false, opened = false;
         try
         {
-            if (GdipCreateBitmapFromFile(path, out bitmap) != 0 || bitmap == IntPtr.Zero) return false;
-            if (GdipCreateHBITMAPFromBitmap(bitmap, out IntPtr hBitmap, 0) != 0 || hBitmap == IntPtr.Zero)
-                return false;
-            if (!ShellNative.OpenClipboard(IntPtr.Zero)) return false;
-            try
+            if (includeBitmap)
             {
-                ShellNative.EmptyClipboard();
-                // 成功后句柄所有权移交系统，不能再 DeleteObject。
-                return ShellNative.SetClipboardData(ShellNative.CF_BITMAP, hBitmap) != IntPtr.Zero;
+                if (GdipCreateBitmapFromFile(path, out bitmap) != 0 || bitmap == IntPtr.Zero) return false;
+                if (GdipCreateHBITMAPFromBitmap(bitmap, out hBitmap, 0) != 0 || hBitmap == IntPtr.Zero)
+                    return false;
             }
-            finally { ShellNative.CloseClipboard(); }
+            hDrop = BuildDropFiles(Path.GetFullPath(path));
+            if (hDrop == IntPtr.Zero) return false;
+
+            if (!ShellNative.OpenClipboard(IntPtr.Zero)) return false;
+            opened = true;
+            ShellNative.EmptyClipboard();
+
+            bool bitmapOk = true;
+            if (hBitmap != IntPtr.Zero)
+            {
+                // SetClipboardData 成功后句柄所有权移交系统，不能再 DeleteObject。
+                bitmapOk = ShellNative.SetClipboardData(ShellNative.CF_BITMAP, hBitmap) != IntPtr.Zero;
+                bitmapTransferred = bitmapOk;
+            }
+            bool dropOk = ShellNative.SetClipboardData(ShellNative.CF_HDROP, hDrop) != IntPtr.Zero;
+            dropTransferred = dropOk;
+            return bitmapOk && dropOk;
         }
         catch (Exception) { return false; }
-        finally { if (bitmap != IntPtr.Zero) GdipDisposeImage(bitmap); }
+        finally
+        {
+            if (opened) ShellNative.CloseClipboard();
+            if (!bitmapTransferred && hBitmap != IntPtr.Zero) ShellNative.DeleteObject(hBitmap);
+            if (!dropTransferred && hDrop != IntPtr.Zero) ShellNative.GlobalFree(hDrop);
+            if (bitmap != IntPtr.Zero) GdipDisposeImage(bitmap);
+        }
+    }
+
+    private const uint GmemMoveable = 0x0002;
+    private const uint GmemZeroInit = 0x0040;
+
+    /// <summary>
+    /// 构造 DROPFILES：20 字节头（pFiles / pt / fNC / fWide） +
+    /// UTF-16LE 绝对路径 + 单个 NUL，末尾再补一个 NUL 表示列表结束。
+    /// </summary>
+    private static IntPtr BuildDropFiles(string fullPath)
+    {
+        byte[] names = Encoding.Unicode.GetBytes(fullPath + "\0\0");
+        IntPtr hMem = ShellNative.GlobalAlloc(GmemMoveable | GmemZeroInit,
+            (UIntPtr)(uint)(20 + names.Length));
+        if (hMem == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr p = ShellNative.GlobalLock(hMem);
+        if (p == IntPtr.Zero) { ShellNative.GlobalFree(hMem); return IntPtr.Zero; }
+        try
+        {
+            Marshal.WriteInt32(p, 0, 20);  // pFiles：文件列表相对句柄起点的偏移
+            Marshal.WriteInt32(p, 16, 1);  // fWide = TRUE（路径是 UTF-16）
+            Marshal.Copy(names, 0, p + 20, names.Length);
+        }
+        finally { ShellNative.GlobalUnlock(hMem); }
+        return hMem;
     }
 }
 

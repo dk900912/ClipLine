@@ -97,8 +97,11 @@ public static class Layout
     public static int FlightThumbnailLimit(int captureLongestEdge, double scale) =>
         Math.Clamp((int)Math.Round(captureLongestEdge * scale), 400, 1500);
 
-    /// <summary>V-28：丢弃下落角度 tilt + (tilt×7 + 20)·e³。</summary>
-    public static double FallTilt(double tilt) => tilt + (tilt * 7 + 20) * Math.Pow(Math.E, 3);
+    /// <summary>
+    /// V-28：丢弃下落的终态倾角。Swift 源码里 e 是进度三次方 raw³（不是自然常数）：
+    /// angle = tilt + (tilt×7 + 20)·e，raw=1 时 e=1，故终值 = tilt×8 + 20。
+    /// </summary>
+    public static double FallTilt(double tilt) => tilt * 8 + 20;
 
     /// <summary>G-06：拖拽阈值。</summary>
     public const double DragThresholdDip = 4;

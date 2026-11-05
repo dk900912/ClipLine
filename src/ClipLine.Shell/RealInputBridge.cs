@@ -26,6 +26,10 @@ internal sealed class RealInputBridge : IDisposable
     private readonly Dictionary<string, long> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<MenuEntry> _menuEntries = new();
     private string? _lastClipboardHash;
+    // 自己写剪贴板（单击复制 / 右键复制）会触发 WM_CLIPBOARDUPDATE。
+    // 吞掉紧随其后的 1–2 条通知，否则每复制一次就自动再挂一张自己的副本。
+    private int _selfClipboardWrites;
+    private long _selfClipboardUntilMs;
     private Guid _contextItemId;
     private bool _clipboardAttached;
     private bool _hotKeyRegistered;
@@ -146,6 +150,22 @@ internal sealed class RealInputBridge : IDisposable
     private void OnFolderChanged(string path, FolderChange change, string directory, long nowMs)
     {
         Diag($"folder handle: {change} {path}");
+
+        if (FolderWatcher.IsRemoval(change))
+        {
+            // 目录里的图片被删掉 / 改名，绳上不能留幽灵卡片。
+            // 只对确实挂在绳上的路径发事件，避免无关文件删除制造状态与落盘噪音。
+            bool onLine = _host.Facade.Current.Items.Any(item =>
+                string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase));
+            if (!onLine) return;
+            _seen.Remove(path); // 同名文件再次创建时可以被立刻挂上
+            Diag("folder -> FileDisappeared: " + path);
+            _host.Facade.Handle(new FileDisappeared(path));
+            _host.AdvanceFrame();
+            _host.RenderFrame();
+            return;
+        }
+
         if (change is not (FolderChange.Added or FolderChange.RenamedNewName or FolderChange.Modified)) return;
         if (!File.Exists(path) || !CaptureIntegrity.IsSupported(path)) return;
         bool isSystemFolder = string.Equals(directory, _host.Environment.ScreenshotsFolder,
@@ -163,7 +183,7 @@ internal sealed class RealInputBridge : IDisposable
             Diag("folder -> NewItem: " + path);
             _host.Facade.Handle(new NewItem(path, ItemOrigin.Screenshot,
                 IsRecording: CaptureIntegrity.IsVideo(path), InOwnDirectory: false));
-            _host.Facade.AdvanceTo(Environment.TickCount64);
+            _host.AdvanceFrame();
             _host.EnsurePresented();
             _host.RenderFrame();
         }
@@ -179,6 +199,16 @@ internal sealed class RealInputBridge : IDisposable
 
     private void OnClipboardUpdated()
     {
+        if (_selfClipboardWrites > 0)
+        {
+            if (Environment.TickCount64 <= _selfClipboardUntilMs)
+            {
+                _selfClipboardWrites--;
+                Diag("clipboard: ignored self-written update");
+                return;
+            }
+            _selfClipboardWrites = 0; // 超时作废，绝不吞掉用户之后的外部复制
+        }
         if (!_host.Facade.Current.ClipboardEnabled) return;
         if (!ShellNative.OpenClipboard(IntPtr.Zero)) return;
 
@@ -217,7 +247,7 @@ internal sealed class RealInputBridge : IDisposable
 
             Diag("clipboard -> NewItem: " + path);
             _host.Facade.Handle(new NewItem(path, ItemOrigin.Clipboard, InOwnDirectory: true));
-            _host.Facade.AdvanceTo(Environment.TickCount64);
+            _host.AdvanceFrame();
             _host.EnsurePresented();
             _host.RenderFrame();
             StateSnapshot s = _host.Facade.Current;
@@ -362,7 +392,7 @@ internal sealed class RealInputBridge : IDisposable
     private void InvokeTrayAction(MenuEntry entry)
     {
         _host.Facade.Handle(new TrayMenuItemInvoked(entry.Action, entry.Argument));
-        _host.Facade.AdvanceTo(Environment.TickCount64);
+        _host.AdvanceFrame();
         _host.RenderFrame();
         if (entry.Action == TrayMenuAction.Quit) { _host.RequestQuit(); return; }
         // 设置类菜单（接管截图 / 挂上复制的图片 / 监视文件夹）改完后，
@@ -398,7 +428,8 @@ internal sealed class RealInputBridge : IDisposable
     // 卡片真实鼠标交互
     // ------------------------------------------------------------------
 
-    private void OnRopeMouse(RopeMouseEvent e)
+    /// <summary>internal 供冒烟直接派发 WM 转换后的事件，覆盖「消息 → 门面」映射层。</summary>
+    internal void OnRopeMouse(RopeMouseEvent e)
     {
         if (e.CardIndex < 0 || e.ItemId == Guid.Empty) return;
         switch (e.Kind)
@@ -422,7 +453,7 @@ internal sealed class RealInputBridge : IDisposable
                 _host.Facade.Handle(new Scroll(e.WheelDelta / 120.0, false));
                 break;
         }
-        _host.Facade.AdvanceTo(Environment.TickCount64);
+        _host.AdvanceFrame();
         _host.RenderFrame();
     }
 
@@ -432,6 +463,20 @@ internal sealed class RealInputBridge : IDisposable
         string argument = command.Argument ?? string.Empty;
         switch (command.Kind)
         {
+            // 方案 D：更新是同一条「门面发命令 → 输入桥落到真实副作用」链路。
+            case CommandKind.ShowUpdateNotice:
+                _host.Tray.ShowBalloon("ClipLine 更新", argument);
+                break;
+            case CommandKind.RunUpdateCheck:
+                _host.Updates.RunCheck(argument);
+                break;
+            case CommandKind.DownloadUpdate:
+                _host.Updates.Download(argument);
+                break;
+            case CommandKind.InstallUpdate:
+                _host.Updates.Install(argument);
+                break;
+
             case CommandKind.ShowWelcome:
                 _host.Tray.ShowBalloon("欢迎使用 ClipLine", "截个图，它就会挂在这里。右键托盘图标可打开设置菜单。");
                 break;
@@ -440,14 +485,37 @@ internal sealed class RealInputBridge : IDisposable
                 // C-01 / F-04：两个捕获源按规格是 opt-in，首次运行明确告知开启入口，
                 // 不擅自替用户改写设置。
                 _host.Tray.ShowBalloon("开启截图挂绳",
-                    "右键托盘图标 → 勾选「挂上复制的图片」与「接管截图」，之后截图和复制的图片就会自动挂上。");
+                    "在托盘菜单勾选两项捕获开关，即可自动挂上截图与复制的图片。");
                 break;
 
             case CommandKind.ShowQuickLook:
             case CommandKind.ShowMarkupEditor:
             case CommandKind.ShowTrimEditor:
             case CommandKind.ShowHeldWindow:
-                OpenDefaultApp(ResolvePath(argument));
+            {
+                // v1.4：四个菜单项各自打开自己的自绘窗口，不再统一降级到
+                // ShellExecuteW("open")（那正是「点了效果都一样」的根因）。
+                ToolMode mode = command.Kind switch
+                {
+                    CommandKind.ShowQuickLook => ToolMode.QuickLook,
+                    CommandKind.ShowMarkupEditor => ToolMode.Markup,
+                    CommandKind.ShowTrimEditor => ToolMode.Trim,
+                    _ => ToolMode.Held,
+                };
+                (string? path, Guid id, int index) = ResolveCard(argument);
+                var paths = new List<string>();
+                foreach (CardVisual card in _host.CurrentView().Cards) paths.Add(card.Path);
+                _host.Tools.Show(mode, paths, index, id);
+                Diag($"tool window: {mode} index={index} path={path}");
+                break;
+            }
+
+            case CommandKind.CloseQuickLook:
+                _host.Tools.Close(ToolMode.QuickLook);
+                break;
+
+            case CommandKind.CloseHeldWindow:
+                _host.Tools.Close(ToolMode.Held);
                 break;
 
             case CommandKind.ShowContextMenu:
@@ -457,7 +525,18 @@ internal sealed class RealInputBridge : IDisposable
             case CommandKind.WriteClipboardImage:
             case CommandKind.WriteClipboardFile:
                 string? copyPath = ResolvePath(argument);
-                if (!string.IsNullOrEmpty(copyPath)) GdiPlus.CopyFileToClipboard(copyPath);
+                // D-11：录屏只放文件引用；其余图片同时给位图（聊天/文档）与
+                // CF_HDROP（资源管理器 Ctrl+V 粘贴文件）。
+                bool withBitmap = command.Kind == CommandKind.WriteClipboardImage;
+                if (!string.IsNullOrEmpty(copyPath) && GdiPlus.CopyFileToClipboard(copyPath, withBitmap))
+                {
+                    // 实测：EmptyClipboard + CF_BITMAP + CF_HDROP 恰好产生 3 条
+                    // WM_CLIPBOARDUPDATE。计数必须精确，多留会把用户紧接着的
+                    // 外部复制当成回声吞掉（e2e 曾因此偶发 CLIP_OK=False）。
+                    _selfClipboardWrites = 3;
+                    _selfClipboardUntilMs = Environment.TickCount64 + 2000;
+                    Diag("clipboard: self copy written (bitmap+HDROP), suppress echo");
+                }
                 break;
 
             case CommandKind.PlaySound:
@@ -470,7 +549,7 @@ internal sealed class RealInputBridge : IDisposable
                 if (!string.IsNullOrEmpty(folder))
                 {
                     _host.Facade.Handle(new TrayMenuItemInvoked(TrayMenuAction.AddFolder, folder));
-                    _host.Facade.AdvanceTo(Environment.TickCount64);
+                    _host.AdvanceFrame();
                 }
                 break;
 
@@ -479,7 +558,10 @@ internal sealed class RealInputBridge : IDisposable
                 break;
 
             case CommandKind.ShowCopiedBadge:
-                _host.Tray.ShowBalloon("已复制", "图片已写入剪贴板，可直接粘贴。");
+                // v1.3：卡片上的「已复制」角标 + 3° 轻摆已经构成一次完整反馈，
+                // 再弹通知窗是重复打扰（用户实测反馈）。角标由 ShellAppHost 按
+                // 状态帧重绘，这里刻意不再转发托盘；通知窗只服务于欢迎、
+                // 首次运行的捕获开关提示、快捷键说明这三类需要阅读的场景。
                 break;
 
             case CommandKind.WatchFolder:
@@ -504,6 +586,33 @@ internal sealed class RealInputBridge : IDisposable
         foreach (CardVisual card in _host.CurrentView().Cards)
             if (card.Id == _contextItemId) return card.Path;
         return null;
+    }
+
+    /// <summary>
+    /// 编辑器命令的参数有两种形态：图片路径（快速查看 / 标记 / 修剪）或卡片 Id
+    /// （拿在手上由门面发 <c>e.ItemId.ToString()</c>）。统一解析成「路径 + Id + 在绳上的序号」，
+    /// 让窗口既能显示当前图，也能用 ← → 浏览整条绳。
+    /// </summary>
+    private (string? Path, Guid Id, int Index) ResolveCard(string argument)
+    {
+        IReadOnlyList<CardVisual> cards = _host.CurrentView().Cards;
+        if (!string.IsNullOrEmpty(argument))
+        {
+            if (File.Exists(argument))
+            {
+                for (int i = 0; i < cards.Count; i++)
+                    if (string.Equals(cards[i].Path, argument, StringComparison.OrdinalIgnoreCase))
+                        return (argument, cards[i].Id, i);
+                return (argument, Guid.Empty, 0);
+            }
+            if (Guid.TryParse(argument, out Guid id))
+                for (int i = 0; i < cards.Count; i++)
+                    if (cards[i].Id == id) return (cards[i].Path, id, i);
+        }
+        if (cards.Count == 0) return (null, Guid.Empty, 0);
+        for (int i = 0; i < cards.Count; i++)
+            if (cards[i].Id == _contextItemId) return (cards[i].Path, cards[i].Id, i);
+        return (cards[0].Path, cards[0].Id, 0);
     }
 
     private static void OpenDefaultApp(string? path)
@@ -584,7 +693,7 @@ internal sealed class RealInputBridge : IDisposable
             if (selected > 0 && actions.TryGetValue(selected, out ContextAction action))
             {
                 _host.Facade.Handle(new ContextMenuItem(_contextItemId, action));
-                _host.Facade.AdvanceTo(Environment.TickCount64);
+                _host.AdvanceFrame();
                 _host.RenderFrame();
             }
         }
@@ -602,7 +711,7 @@ internal sealed class RealInputBridge : IDisposable
     private void ToggleLine()
     {
         _host.Facade.Handle(new ToggleLine());
-        _host.Facade.AdvanceTo(Environment.TickCount64);
+        _host.AdvanceFrame();
         _host.EnsurePresented();
         _host.RenderFrame();
     }

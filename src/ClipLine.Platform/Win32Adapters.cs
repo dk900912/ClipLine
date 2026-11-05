@@ -40,6 +40,8 @@ public enum FolderChange
     Modified,
     RenamedNewName,
     Unknown,
+    /// <summary>FILE_ACTION_RENAMED_OLD_NAME：改名前的旧文件名已消失，语义等同删除。</summary>
+    RenamedOldName,
 }
 
 /// <summary>
@@ -67,8 +69,13 @@ public sealed class FolderWatcher : IDisposable
         Win32Native.FILE_ACTION_REMOVED => FolderChange.Removed,
         Win32Native.FILE_ACTION_MODIFIED => FolderChange.Modified,
         Win32Native.FILE_ACTION_RENAMED_NEW_NAME => FolderChange.RenamedNewName,
+        Win32Native.FILE_ACTION_RENAMED_OLD_NAME => FolderChange.RenamedOldName,
         _ => FolderChange.Unknown,
     };
+
+    /// <summary>删除 / 改名旧名：旧文件已不在目录里，绳上对应卡片必须联动取下。</summary>
+    public static bool IsRemoval(FolderChange change) =>
+        change is FolderChange.Removed or FolderChange.RenamedOldName;
 
     /// <summary>解析 FILE_NOTIFY_INFORMATION 链：NextEntryOffset / Action / FileNameLength / UTF-16 名称。</summary>
     public static IReadOnlyList<(string Name, FolderChange Change)> Parse(byte[] buffer, int byteCount)
@@ -125,8 +132,11 @@ public sealed class FolderWatcher : IDisposable
             foreach (var (name, change) in Parse(buffer, (int)returned))
             {
                 string full = System.IO.Path.Combine(path, name);
-                if (_lastSeen.TryGetValue(full, out long last) && ShouldSuppress(last, now)) continue;
-                _lastSeen[full] = now;
+                // 删除与新增各自独立防抖：否则「新建后 200 ms 内删除」会被新增事件
+                // 的时间戳吞掉，绳上留下永远不消失的幽灵卡片。
+                string key = IsRemoval(change) ? "del:" + full : full;
+                if (_lastSeen.TryGetValue(key, out long last) && ShouldSuppress(last, now)) continue;
+                _lastSeen[key] = now;
                 Changed?.Invoke(full, change, now);
             }
         }

@@ -28,7 +28,8 @@ else {
     Write-Output 'TRUST=MANUAL_REQUIRED'
     Write-Output 'STEP=Double-click dist\ClipLine.cer, choose Install Certificate,'
     Write-Output '     select Local Machine / Trusted Root Certification Authorities,'
-    Write-Output '     then re-run: Add-AppxPackage -Path dist\ClipLine_1.0.0.0_x64.msix'
-    Write-Output 'ALTERNATIVE=Use ClipLine_1.0.0.0_x64_portable.zip (no signing, no admin).'
+    Write-Output '     then re-run: Add-AppxPackage -Path dist\ClipLine_<version>_x64.msix'
+    Write-Output 'ALTERNATIVE=Use ClipLine_<version>_x64_portable.zip (no signing, no admin).'
+    Write-Output 'NOTE=Current filenames and hashes are listed in dist\release-assets.txt'
 }
 Write-Output "THUMBPRINT=$($cert.Thumbprint)"

@@ -35,15 +35,21 @@ public sealed class P6Tests : ITestSuite
             Check.True(covered * 2 >= total, $"自动化覆盖不低于 50%（实际 {covered}/{total}）");
         });
 
-        t.Case("L-03", "源码零联网 API / 零 URL 常量", () =>
+        t.Case("L-03", "网络代码锁定更新白名单文件，源码零 URL 常量 / 零遥测", () =>
         {
+            // 方案 D 放开「应用零出站」定位，但收紧为可审计的三条硬约束：
+            // ① 任何源码都不得出现 URL 字面量、遥测、Socket/WebClient；
+            // ② HttpClient / System.Net.Http 只允许出现在唯一白名单文件 UpdateService.cs；
+            // ③ 该文件必须实现主机白名单校验，且 allowHosts 来自外部配置。
             string[] forbidden =
             {
-                "HttpClient", "WebRequest", "WebClient", "Socket(",
-                "TelemetryClient", "ApplicationInsights", "System.Net.Http",
+                "WebRequest", "WebClient", "Socket(",
+                "TelemetryClient", "ApplicationInsights",
                 "System.Net.Sockets", "http://", "https://",
             };
-            // 排除 SDK 自动生成的 obj/ 与 bin/（ImplicitUsings 会生成 System.Net.Http 的 global using）。
+            string[] networkApi = { "HttpClient", "System.Net.Http" };
+            const string allowedFile = "UpdateService.cs";
+
             var files = Directory.GetFiles(System.IO.Path.Combine(Root(), "src"), "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains($"{System.IO.Path.DirectorySeparatorChar}obj{System.IO.Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
                 .Where(f => !f.Contains($"{System.IO.Path.DirectorySeparatorChar}bin{System.IO.Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
@@ -51,15 +57,23 @@ public sealed class P6Tests : ITestSuite
             var hits = new List<string>();
             foreach (string file in files)
             {
+                string name = System.IO.Path.GetFileName(file);
                 string content = File.ReadAllText(file);
                 foreach (string word in forbidden)
-                {
-                    if (content.Contains(word, StringComparison.Ordinal))
-                        hits.Add(System.IO.Path.GetFileName(file) + ": " + word);
-                }
+                    if (content.Contains(word, StringComparison.Ordinal)) hits.Add(name + ": " + word);
+                if (!string.Equals(name, allowedFile, StringComparison.OrdinalIgnoreCase))
+                    foreach (string word in networkApi)
+                        if (content.Contains(word, StringComparison.Ordinal)) hits.Add(name + ": " + word);
             }
             Check.True(files.Length >= 20, $"覆盖全部 C# 源码（实际 {files.Length} 个文件）");
-            Check.Equal(0, hits.Count, "联网依赖数量：" + string.Join(", ", hits));
+            Check.Equal(0, hits.Count, "越界联网依赖：" + string.Join(", ", hits));
+
+            string service = System.IO.Path.Combine(Root(), "src", "ClipLine.Platform", allowedFile);
+            string serviceText = File.ReadAllText(service);
+            Check.Contains("AssertAllowed", serviceText, "更新服务执行主机白名单校验");
+            Check.Contains("_allowHosts", serviceText, "白名单来自配置而非硬编码");
+            string config = File.ReadAllText(System.IO.Path.Combine(Root(), "packaging", "update-config.json"));
+            Check.Contains("allowHosts", config, "主机白名单在外部配置里可审计");
         });
 
         t.Case("P6-02", "唯一测试接缝未被后续阶段破坏", () =>

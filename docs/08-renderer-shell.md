@@ -87,7 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1
 ## 7. 明确未覆盖（不得误报为完成）
 
 - 渲染仍是 **GDI 32bpp DIB**（P0 验证过的路径），不是定稿的 **Win2D / DirectComposition + `WS_EX_NOREDIRECTIONBITMAP`**；两条路径互斥（P0 结论 #2），升级需另行立项。
-- **没有 XAML 窗口**：16 项托盘菜单、快速查看、标注、修剪、拿在手上、欢迎窗目前只有契约与命令，没有 WinUI 界面；托盘右键 v0 仅退出。
+- **没有 XAML 窗口**：16 项托盘菜单、快速查看、标注、修剪、拿在手上、欢迎窗目前只有契约与命令，没有 WinUI 界面；托盘右键 v0 仅退出。**（本节是渲染壳 v0 的当时状态，已被后续版本取代：v1 有 Win32 原生托盘菜单与自绘通知卡，v1.4 的四个 P4 命令已有独立自绘分层窗口，但依旧不是 XAML/WinUI 窗口。见 `docs/09-release-v1.md` §12。）**
 - 剪贴板 / 目录监听、OLE 拖放、WIC 解码与 HEIC、MSIX 稀疏包右键扩展、MediaFoundation 修剪未接真实实现。
 - MSIX 打包与签名、实机 DPI 100/150/200%、深浅色 / 高对比度、虚拟桌面、任务栏置顶、全屏不抢焦点的手工矩阵仍未做。
 - 交互模式只做过程序级验证，**没有人工目视验收**。

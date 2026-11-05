@@ -11,11 +11,13 @@ public sealed class ShellTray : IDisposable
 {
     public const string HostClassName = "ClipLine_TrayHost";
     internal const uint CallbackMessage = ShellNative.WM_APP + 1;
+    private static readonly UIntPtr NoticeTimerId = new(1);
 
     private static ShellNative.WndProcDelegate? s_proc;
     private static ShellTray? s_instance;
 
     private IntPtr _host;
+    private NoticeWindow? _notice;
     private IntPtr _iconDefault;
     private IntPtr _iconActive;
     private IntPtr _iconIdle;
@@ -121,6 +123,14 @@ public sealed class ShellTray : IDisposable
         }
         switch (msg)
         {
+            case ShellNative.WM_TIMER:
+                if (wParam.ToUInt64() == NoticeTimerId.ToUInt64() && self is not null)
+                {
+                    // 通知结束后立刻停表，空闲时没有任何定时器或重绘。
+                    if (self._notice is null || !self._notice.Tick(Environment.TickCount64))
+                        ShellNative.KillTimer(hWnd, NoticeTimerId);
+                }
+                return IntPtr.Zero;
             case ShellNative.WM_CLIPBOARDUPDATE:
                 self?.ClipboardUpdated?.Invoke();
                 return IntPtr.Zero;
@@ -136,23 +146,26 @@ public sealed class ShellTray : IDisposable
         }
     }
 
-    /// <summary>首次安装的欢迎提示：系统气泡，不额外创建 XAML 窗口。</summary>
+    /// <summary>
+    /// 轻量通知（v1.2）。原实现用 <c>NIF_INFO</c> 系统气泡，尺寸/圆角/配色/动画
+    /// 全部由 Windows 绘制，应用既不能缩小 20% 也不能美化，且通知中心关闭时会被吞掉。
+    /// 现在改为自绘分层窗口；托盘宿主窗口用 WM_TIMER 驱动淡入淡出，结束即停表。
+    /// 方法名保留是为了不改动门面四处命令的调用点。
+    /// </summary>
     public void ShowBalloon(string title, string text)
     {
         if (!IsAdded) return;
-        var data = new ShellNative.NOTIFYICONDATAW
+        _notice ??= new NoticeWindow(ShellNative.GetDpiForSystem() / 96.0);
+        if (!_notice.Show(title, text, Environment.TickCount64)) return;
+        if (ShellNative.SetTimer(_host, NoticeTimerId, 33, IntPtr.Zero) == UIntPtr.Zero)
         {
-            CbSize = (uint)Marshal.SizeOf<ShellNative.NOTIFYICONDATAW>(),
-            HWnd = _host,
-            UID = 1,
-            UFlags = ShellNative.NIF_INFO,
-            SzTip = _tooltip,
-            SzInfo = text.Length > 250 ? text[..250] : text,
-            SzInfoTitle = title.Length > 60 ? title[..60] : title,
-            DwInfoFlags = 1, // NIIF_INFO
-        };
-        ShellNative.Shell_NotifyIconW(ShellNative.NIM_MODIFY, ref data);
+            // 定时器极少数情况创建失败：至少显示一帧完整内容，不静默丢掉通知。
+            _notice.Tick(Environment.TickCount64 + 200);
+        }
     }
+
+    /// <summary>冒烟用：直接拿到自绘通知窗做确定性断言，不依赖消息循环。</summary>
+    internal NoticeWindow? Notice => _notice;
 
     /// <summary>用 Win32 直接画 16×16 的 E「双线」三态图标（品牌资产栅格化前的占位实现）。</summary>
     private static unsafe IntPtr CreateIcon(bool active, bool dim)
@@ -214,6 +227,9 @@ public sealed class ShellTray : IDisposable
 
     public void Dispose()
     {
+        ShellNative.KillTimer(_host, NoticeTimerId);
+        _notice?.Dispose();
+        _notice = null;
         if (IsAdded)
         {
             Modify(ShellNative.NIM_DELETE);

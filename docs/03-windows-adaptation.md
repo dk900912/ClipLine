@@ -299,4 +299,4 @@
 | 拖放目标 | 微信/Word/浏览器、文件夹、桌面、跨盘、回收站、空白取消 |
 | 私密场景 | 密码管理器复制、复制文件、复制图文混排、锁屏期间剪贴板变化 |
 
-**放行门槛**：`01-feature-alignment.md` 全部复选框勾完，上述矩阵无 P0/P1 缺陷，且「零出站网络请求」通过抓包验证。v1 不含多显示器 / 每屏 DPI 组合（见 `01` 的 `N-11`）。
+**放行门槛**：`01-feature-alignment.md` 全部复选框勾完，上述矩阵无 P0/P1 缺陷，且出站连接仅限方案 D 白名单（`api.github.com` / `github.com` / `objects.githubusercontent.com`）并由 `tools/check-privacy.sh` 静态门禁 + 抓包复核；其余场景零出站。v1 不含多显示器 / 每屏 DPI 组合（见 `01` 的 `N-11`）。

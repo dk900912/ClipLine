@@ -53,17 +53,38 @@ $bmp.Save($sample, [System.Drawing.Imaging.ImageFormat]::Png)
 Write-Output "CLIP_BEFORE=$before"
 [System.Windows.Forms.Clipboard]::SetImage($bmp)
 Write-Output 'CLIP_SET=OK'
-Start-Sleep -Seconds 3
-
-$after = @(Get-ChildItem $own -Filter 'clip-*.png' -File -ErrorAction SilentlyContinue)
+# Bounded poll instead of a fixed sleep: right after process startup the
+# WM_CLIPBOARDUPDATE -> PNG round trip can take longer than 3 s. The very
+# first update can also be lost while the tray host is still attaching, so
+# re-arm the clipboard once (at most) instead of reporting a false negative.
+# A genuinely broken listener still fails both attempts.
+$after = @()
+for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    for ($i = 0; $i -lt 32; $i++) {
+        Start-Sleep -Milliseconds 250
+        $after = @(Get-ChildItem $own -Filter 'clip-*.png' -File -ErrorAction SilentlyContinue)
+        if ($after.Count -gt $before) { break }
+    }
+    if ($after.Count -gt $before) { break }
+    if ($attempt -eq 0) {
+        Write-Output 'CLIP_REARM=OK'
+        [System.Windows.Forms.Clipboard]::SetImage($bmp)
+    }
+}
 Write-Output "CLIP_AFTER=$($after.Count)"
 foreach ($f in $after | Select-Object -Last 3) {
     Write-Output "CAPTURED=$($f.Name) BYTES=$($f.Length)"
 }
 
-# Exercise the second real input path: a file landing in the watched folder.
-Copy-Item $sample (Join-Path $own 'e2e-folder.png') -Force
+# Exercise the second real input path: a file landing in the watched folder,
+# then disappearing from it. ReadDirectoryChangesW reports FILE_ACTION_REMOVED
+# and the rope must take the card down (F-11). Only this test file is touched.
+$folderFile = Join-Path $own 'e2e-folder.png'
+Copy-Item $sample $folderFile -Force
 Write-Output 'FOLDER_EVENT_SENT=OK'
+Start-Sleep -Seconds 2
+[System.IO.File]::Delete($folderFile)
+Write-Output 'FOLDER_FILE_DELETED=OK'
 Start-Sleep -Seconds 2
 
 Write-Output ("STATE_JSON=" + (Test-Path (Join-Path $env:LOCALAPPDATA 'ClipLine\state.json')))
@@ -106,6 +127,7 @@ $fresh.Dispose()
 # frame is the deterministic rendering proof.
 $clipOk = $after.Count -gt $before
 $folderOk = $false
+$deleteOk = $false
 if (Test-Path $diag) {
     $stream = [System.IO.File]::Open($diag, [System.IO.FileMode]::Open,
         [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -116,8 +138,9 @@ if (Test-Path $diag) {
     }
     finally { $stream.Dispose() }
     $folderOk = ($newLog -match 'folder -> NewItem') -and ($newLog -match 'e2e-folder\.png')
+    $deleteOk = ($newLog -match 'folder -> FileDisappeared') -and ($newLog -match 'e2e-folder\.png')
 }
 $frameOk = (Test-Path $frame) -and ((Get-Item $frame).Length -gt 1000)
-Write-Output "CLIP_OK=$clipOk FOLDER_OK=$folderOk FRAME_OK=$frameOk"
-if ($clipOk -and $folderOk -and $frameOk) { Write-Output 'VERDICT=PASS' }
-else { Write-Output "VERDICT=FAIL (clip=$clipOk folder=$folderOk frame=$frameOk)" }
+Write-Output "CLIP_OK=$clipOk FOLDER_OK=$folderOk DELETE_OK=$deleteOk FRAME_OK=$frameOk"
+if ($clipOk -and $folderOk -and $deleteOk -and $frameOk) { Write-Output 'VERDICT=PASS' }
+else { Write-Output "VERDICT=FAIL (clip=$clipOk folder=$folderOk delete=$deleteOk frame=$frameOk)" }

@@ -18,15 +18,18 @@ public static class MenuAudit
 
     private static readonly List<Row> Rows = new();
 
-    /// <summary>v1 明确用「系统默认应用 / 气泡」等价替换，或无合成器动画的命令。</summary>
+    /// <summary>
+    /// v1 明确降级/等价替换的命令。注意 P4 的 ShowQuickLook / ShowMarkupEditor /
+    /// ShowTrimEditor / ShowHeldWindow 自 v1.4 起已有四个独立自绘窗口，不再是
+    /// 「统一交给系统默认应用」的占位，因此从本集合移除（真实点击验证 25/25 覆盖）。
+    /// 仍在集合里的 CloseHeldWindow 用于「全部挂回」这一项：门面只发关窗命令、
+    /// 状态不变，仍属 v1 等价替换。
+    /// v1.5 方案 D：「检查更新…」不再发无效的 OpenBrowser 查询串，改为真正执行
+    /// RunUpdateCheck 的自动更新链路，因此 OpenBrowser 从降级集合移除。
+    /// </summary>
     private static readonly HashSet<CommandKind> Degraded = new()
     {
-        CommandKind.ShowQuickLook,
-        CommandKind.ShowMarkupEditor,
-        CommandKind.ShowTrimEditor,
-        CommandKind.ShowHeldWindow,
         CommandKind.ShowShortcutRecorder,
-        CommandKind.OpenBrowser,
         CommandKind.CloseQuickLook,
         CommandKind.CloseHeldWindow,
         CommandKind.HideCopiedBadge,

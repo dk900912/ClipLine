@@ -33,9 +33,18 @@ internal static class ShellNative
     internal const uint DibRgbColors = 0;
 
     internal const uint WM_DESTROY = 0x0002;
+    internal const uint WM_SETCURSOR = 0x0020;
     internal const uint WM_APP = 0x8000;
     internal const uint WM_RBUTTONUP = 0x0205;
     internal const uint WM_LBUTTONUP = 0x0202;
+
+    // 分层窗口必须自带光标：hCursor 为 NULL 时 DefWindowProc 不重置光标，
+    // 系统遗留的 IDC_APPSTARTING / IDC_WAIT 会一直跟着鼠标（v1 实测的「加载小圆圈」）。
+    internal const uint HTCLIENT = 1;
+    internal static readonly IntPtr IdcArrow = new(32512);
+    internal static readonly IntPtr IdcHand = new(32649);
+    internal static readonly IntPtr IdcWait = new(32514);
+    internal static readonly IntPtr IdcAppStarting = new(32650);
 
     internal const uint NIM_ADD = 0;
     internal const uint NIM_MODIFY = 1;
@@ -46,8 +55,11 @@ internal static class ShellNative
     internal const uint NIF_INFO = 0x00000010;
 
     internal const int SM_CXSCREEN = 0;
+    internal const int SM_CYSCREEN = 1;
+    internal const uint WM_TIMER = 0x0113;
     internal const uint SPI_GETCLIENTAREAANIMATION = 0x1042;
     internal const uint SPI_GETHIGHCONTRAST = 0x0042;
+    internal const uint SPI_GETWORKAREA = 0x0030;
     internal const uint HCF_HIGHCONTRASTON = 0x00000001;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -55,6 +67,9 @@ internal static class ShellNative
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct SIZE { public int CX; public int CY; public SIZE(int cx, int cy) { CX = cx; CY = cy; } }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RECT { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct BLENDFUNCTION
@@ -205,6 +220,9 @@ internal static class ShellNative
     [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]
     internal static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
+
     [DllImport("user32.dll")]
     internal static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
@@ -229,6 +247,16 @@ internal static class ShellNative
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, ref HIGHCONTRASTW pvParam, uint fWinIni);
 
+    [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW", SetLastError = true)]
+    internal static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, ref RECT pvParam, uint fWinIni);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern UIntPtr SetTimer(IntPtr hWnd, UIntPtr nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool KillTimer(IntPtr hWnd, UIntPtr uIDEvent);
+
     // ---- gdi32 ----
     [DllImport("gdi32.dll")]
     internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
@@ -252,6 +280,35 @@ internal static class ShellNative
     // ---- shell32 ----
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern bool Shell_NotifyIconW(uint dwMessage, ref NOTIFYICONDATAW lpData);
+
+    // 光标：窗口类默认光标 + WM_SETCURSOR 显式设置，防止沿用系统等待光标。
+    [DllImport("user32.dll", EntryPoint = "LoadCursorW", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetCursor(IntPtr hCursor);
+
+    // 只读单个指针值，避免把 WNDCLASSEXW 作为 ref 传出（系统会回写内部指针，
+    // 托管封送器误释放会直接造成 0xC0000374 堆损坏）。
+    internal const int GCLP_HCURSOR = -12;
+
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW", SetLastError = true)]
+    internal static extern IntPtr GetClassLongPtrW(IntPtr hWnd, int nIndex);
+
+    // 卡片「已复制」角标：GDI 文本蒙版（中文，无需额外字体库）。
+    [DllImport("gdi32.dll", EntryPoint = "CreateFontW", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr CreateFontW(int cHeight, int cWidth, int cEscapement, int cOrientation,
+        int cWeight, uint bItalic, uint bUnderline, uint bStrikeOut, uint iCharSet,
+        uint iOutPrecision, uint iClipPrecision, uint iQuality, uint iPitchAndFamily, string pszFaceName);
+
+    [DllImport("gdi32.dll")]
+    internal static extern int SetBkMode(IntPtr hdc, int mode);
+
+    [DllImport("gdi32.dll")]
+    internal static extern uint SetTextColor(IntPtr hdc, uint color);
+
+    [DllImport("gdi32.dll", EntryPoint = "TextOutW", CharSet = CharSet.Unicode)]
+    internal static extern bool TextOutW(IntPtr hdc, int x, int y, string lpString, int c);
 
     // ---- kernel32 ----
     [DllImport("kernel32.dll", EntryPoint = "GetModuleHandleW", CharSet = CharSet.Unicode)]
@@ -382,4 +439,74 @@ internal static class ShellNative
 
     internal const int SwShowNormal = 1;
     internal const uint MbOk = 0;
+
+    // ============================================================
+    // v1.4：自绘替身窗口 + 真实鼠标点击端到端验证
+    // ============================================================
+
+    internal const uint WM_KEYDOWN = 0x0100;
+    internal const uint WM_KEYUP = 0x0101;
+    internal const uint WM_CLOSE = 0x0010;
+    internal const int SW_SHOW = 5;
+
+    internal const byte VkEscape = 0x1B;
+    internal const byte VkSpace = 0x20;
+    internal const byte VkLeft = 0x25;
+    internal const byte VkRight = 0x27;
+    internal const byte VkC = 0x43;
+    internal const uint MkLButton = 0x0001;
+    internal const uint KeyeventfKeyup = 0x0002;
+
+    internal const uint MouseeventfLeftdown = 0x0002;
+    internal const uint MouseeventfLeftup = 0x0004;
+    internal const uint MouseeventfRightdown = 0x0008;
+    internal const uint MouseeventfRightup = 0x0010;
+
+    internal const uint MnGetHMenu = 0x01E1;
+    internal const uint MfByPosition = 0x0400;
+    internal const int SmCyMenu = 55;
+    internal const int HtClient = 1;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetCursorPos(int X, int Y);
+
+    [DllImport("user32.dll")]
+    internal static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll", EntryPoint = "FindWindowW", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr FindWindowW(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll", EntryPoint = "PostMessageW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostMessageW(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "GetMenuStringW", CharSet = CharSet.Unicode)]
+    internal static extern int GetMenuStringW(IntPtr hMenu, uint uIDItem,
+        System.Text.StringBuilder lpString, int cchMax, uint uFlag);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetMenuItemRect(IntPtr hWnd, IntPtr hMenu, uint uItem, out RECT lprcItem);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetKeyState(int nVirtKey);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool BitBlt(IntPtr hdcDest, int x, int y, int w, int h,
+        IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
 }

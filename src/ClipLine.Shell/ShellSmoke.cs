@@ -1,5 +1,7 @@
 using System.Text;
 using ClipLine.Application;
+using ClipLine.Domain;
+using ClipLine.Platform;
 
 namespace ClipLine.Shell;
 
@@ -81,13 +83,17 @@ public static class ShellSmoke
         Directory.CreateDirectory(tempRoot);
         string ownDir = Path.Combine(tempRoot, "Screenshots");
         string picturesDir = Path.Combine(tempRoot, "Pictures");
+        // 冒烟状态必须每次从零开始：否则上一轮把卡片「固定」后写回 state.json，
+        // 下一轮就找不到未固定项，V-09 断言会假失败（真实踩到过 33/34）。
+        string statePath = Path.Combine(tempRoot, "state.json");
+        try { File.Delete(statePath); } catch { /* 只读介质时退化为沿用 */ }
 
         int awareness = ShellNative.GetAwarenessFromDpiAwarenessContext(ShellNative.GetThreadDpiAwarenessContext());
         Check("进程级 DPI 感知 (PMv2)", awareness == 2, $"awareness={awareness}, systemDpi={ShellNative.GetDpiForSystem()}");
 
         var clock = new FakeClock();
         var env = new ShellEnvironment(ShellNative.GetDpiForSystem() / 96.0, ownDir, picturesDir);
-        var host = new ShellAppHost(clock, env, Path.Combine(tempRoot, "state.json"));
+        var host = new ShellAppHost(clock, env, statePath);
         host.Start();
         Check("托盘图标（E 双线，message-only 宿主）", host.TrayAdded, $"host=0x{host.Tray.HostHandle.ToInt64():X}");
 
@@ -167,6 +173,384 @@ public static class ShellSmoke
         Progress("checks done, disposing host");
         host.Dispose();
         Progress("host disposed");
+
+        RunRegressionChecks(tempRoot);
+        Progress("regression checks done");
+        RunMotionChecks(tempRoot);
+        Progress("motion checks done");
+    }
+
+    /// <summary>
+    /// v1.1 动效：空绳热区唤出、入场摆入、取下掉落层。
+    /// 独立 host + 假时钟，不干扰前面的启动与回归时序。
+    /// </summary>
+    private static void RunMotionChecks(string tempRoot)
+    {
+        string ownDir = Path.Combine(tempRoot, "Screenshots");
+        string picturesDir = Path.Combine(tempRoot, "Pictures");
+        var clock = new FakeClock { NowMs = 30_000 };
+        var env = new ShellEnvironment(ShellNative.GetDpiForSystem() / 96.0, ownDir, picturesDir);
+        var host = new ShellAppHost(clock, env, Path.Combine(tempRoot, "state-motion.json"));
+        try
+        {
+            host.Start();
+            // 先越过首次安装的 5 s pin，让空绳真正收起并销毁。
+            host.Facade.Handle(new PointerMoved(10, 600));
+            clock.NowMs += 5_400;
+            host.Facade.AdvanceTo(clock.NowMs);
+            clock.NowMs += 400;
+            host.Facade.AdvanceTo(clock.NowMs);
+            host.RenderFrame();
+            bool hiddenAtStart = !host.Rope.IsVisible;
+
+            // ① 空绳：指针停在顶部中间 1/3 区域 0.25 s 后必须把绳子放下来。
+            host.Facade.Handle(new PointerMoved(640, 4));
+            clock.NowMs += 250;
+            host.Facade.AdvanceTo(clock.NowMs);
+            host.RenderFrame();
+            bool revealed = host.Facade.Current.IsRevealed && host.Rope.IsVisible;
+            Check("空绳顶部热区唤出绳子", hiddenAtStart && revealed,
+                $"收起={hiddenAtStart} 唤出={revealed}");
+
+            // ② 入场摆动：新图带 16° 摆入与 -46 DIP 落下，2.5 s 后只剩静态倾角。
+            string motionCard = Path.Combine(ownDir, "motion-card.png");
+            GdiPlus.SaveBgraAsPng(ColorfulDemo(96, 64), 96, 64, motionCard);
+            host.Facade.Handle(new NewItem(motionCard));
+            host.RenderFrame();
+            CardVisual arrive = host.CurrentView().Cards[0];
+
+            // ④ 抗锯齿：摆动帧的卡片边缘必须是连续的多级 alpha 过渡。
+            // 旧的逐行整数位移 + dx²+dy²≤r² 二值判定只会产生 0/255 硬边阶梯。
+            var rect = host.Rope.CardRects.Count > 0
+                ? host.Rope.CardRects[0] : (X: 0, Y: 0, W: 0, H: 0);
+            var swungEdge = host.Rope.AlphaStats(rect.X - 24, rect.Y - 24,
+                rect.X + rect.W + 24, rect.Y + rect.H + 24);
+            Check("摆动边缘抗锯齿（多级 alpha 过渡，非二值阶梯）",
+                swungEdge.Count >= 200 && swungEdge.Levels >= 8,
+                $"半透明像素={swungEdge.Count} alpha级数={swungEdge.Levels}");
+
+            // 抗锯齿不能把帧驱动拖垮：30 帧真实 Present（含 UpdateLayeredWindow）均值需 < 33 ms。
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 30; i++) host.Rope.Present(host.CurrentView());
+            sw.Stop();
+            double perFrame = sw.Elapsed.TotalMilliseconds / 30;
+            Check("摆动帧双线性重采样在 30 fps 预算内", perFrame < 33,
+                $"平均 {perFrame:F2} ms/帧（30 帧）");
+
+            clock.NowMs += 2_500;
+            host.RenderFrame();
+            CardVisual rest = host.CurrentView().Cards[0];
+            var restEdge = host.Rope.AlphaStats(rect.X - 24, rect.Y - 24,
+                rect.X + rect.W + 24, rect.Y + rect.H + 24);
+            Check("静止帧圆角仍有 1px 羽化（解析式 SDF 覆盖率）",
+                restEdge.Count >= 100 && restEdge.Levels >= 8,
+                $"半透明像素={restEdge.Count} alpha级数={restEdge.Levels}");
+            bool swung = Math.Abs(arrive.SwingDegrees) > 10
+                && Math.Abs(arrive.DropDip) > 10
+                && Math.Abs(rest.SwingDegrees) < 6
+                && Math.Abs(rest.DropDip) < 0.5;
+            Check("入场 16° 摆入 + 46 DIP 落下并收敛", swung,
+                $"起始角={arrive.SwingDegrees:F2}° 落下={arrive.DropDip:F1} → " +
+                $"静止角={rest.SwingDegrees:F2}° 落下={rest.DropDip:F1}");
+
+            // ③ 取下：StartFall 交给全屏掉落层，0.55 s 后自动隐藏。
+            host.Facade.Handle(new FileDisappeared(motionCard));
+            host.RenderFrame();
+            bool fallVisible = host.FallWindowVisible;
+            string fallPath = Path.Combine(tempRoot, "frame-fall.png");
+            bool fallDumped = host.DumpFallFrame(fallPath);
+            long fallBytes = File.Exists(fallPath) ? new FileInfo(fallPath).Length : 0;
+            clock.NowMs += 600;
+            host.RenderFrame();
+            bool fallHidden = !host.FallWindowVisible;
+            Check("单张取下 → 全屏掉落层出现并在 0.55 s 后收起",
+                fallVisible && fallDumped && fallBytes > 500 && fallHidden,
+                $"可见={fallVisible} 帧={fallBytes} B 收起={fallHidden}");
+        }
+        finally
+        {
+            host.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// 用户实测反馈的三项回归：左键复制 + 「已复制」角标、监听目录删除联动、
+    /// 悬停时的系统等待光标。用独立 host / 假时钟，不干扰上面的启动时序。
+    /// </summary>
+    private static void RunRegressionChecks(string tempRoot)
+    {
+        string ownDir = Path.Combine(tempRoot, "Screenshots");
+        string picturesDir = Path.Combine(tempRoot, "Pictures");
+        var clock = new FakeClock { NowMs = 10_000 };
+        var env = new ShellEnvironment(ShellNative.GetDpiForSystem() / 96.0, ownDir, picturesDir);
+        // 和 RunChecks 同理：上一轮「固定」会写回这里，不清空会让 V-09 断言假失败。
+        string regressionState = Path.Combine(tempRoot, "state-regression.json");
+        try { File.Delete(regressionState); } catch { /* 只读介质时退化为沿用 */ }
+        var host = new ShellAppHost(clock, env, regressionState);
+        try
+        {
+            host.Start();
+            string cardPath = Path.Combine(ownDir, "regression-card.png");
+            GdiPlus.SaveBgraAsPng(ColorfulDemo(64, 48), 64, 48, cardPath);
+            AppResult added = host.Facade.Handle(new NewItem(cardPath));
+            host.RenderFrame();
+            Guid id = added.State.Items[^1].Id;
+
+            string beforePath = Path.Combine(tempRoot, "frame-before-copy.png");
+            host.Rope.DumpFrame(beforePath);
+
+            // 首次运行可能已经弹过欢迎 / 捕获开关提示，先收起建立干净基线，
+            // 才能准确断言「复制这个动作本身不会再次弹通知」。
+            host.Tray.Notice?.Hide();
+            bool noticeQuietBefore = host.Tray.Notice is null || !host.Tray.Notice.IsVisible;
+
+            // ① 左键单击：用 SendMessageW 真的走一遍「WM → WndProc → 输入桥 → 门面」。
+            // 临时把同步上下文置空，让 WndProc 的 Post 在冒烟线程里同步派发
+            // （冒烟在 OnLaunched 里同步执行，消息泵尚未启动）。
+            host.ConfigureAudit(true, tempRoot);
+            var bridge = new RealInputBridge(host);
+            host.Rope.Mouse += bridge.OnRopeMouse;
+            (int rx, int ry, int rw, int rh) = host.Rope.CardRects[0];
+            int clickX = rx + rw / 2, clickY = ry + rh / 2;
+            IntPtr packed = new((clickY << 16) | (clickX & 0xFFFF));
+            SynchronizationContext? savedContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
+            {
+                ShellNative.SendMessageW(host.Rope.Handle, ShellNative.WM_LBUTTONDOWN, UIntPtr.Zero, packed);
+                ShellNative.SendMessageW(host.Rope.Handle, ShellNative.WM_LBUTTONUP, UIntPtr.Zero, packed);
+            }
+            finally { SynchronizationContext.SetSynchronizationContext(savedContext); }
+            clock.NowMs += (long)env.SystemDoubleClickIntervalMs + 100;
+            AppResult clicked = host.Facade.AdvanceTo(clock.NowMs);
+            bool wroteClipboard = clicked.Commands.Any(c => c.Kind == CommandKind.WriteClipboardImage);
+            bool badgeCommand = clicked.Commands.Any(c => c.Kind == CommandKind.ShowCopiedBadge);
+            bool stateBadge = host.Facade.Current.Items.Any(i => i.Id == id && i.CopiedBadge);
+            bool frameBadge = host.CurrentView().Cards.Any(c => c.Id == id && c.Copied);
+            host.RenderFrame();
+            string afterPath = Path.Combine(tempRoot, "frame-after-copy.png");
+            host.Rope.DumpFrame(afterPath);
+            byte[] beforeBytes = File.Exists(beforePath) ? File.ReadAllBytes(beforePath) : Array.Empty<byte>();
+            byte[] afterBytes = File.Exists(afterPath) ? File.ReadAllBytes(afterPath) : Array.Empty<byte>();
+            bool drawn = beforeBytes.Length > 1000 && afterBytes.Length > 1000
+                && !beforeBytes.AsSpan().SequenceEqual(afterBytes);
+            Check("左键单击 → 写剪贴板 + 卡片「已复制」角标",
+                wroteClipboard && badgeCommand && stateBadge && frameBadge && drawn,
+                $"copy={wroteClipboard} badge={badgeCommand} state={stateBadge} " +
+                $"frame={frameBadge} 重绘={drawn} ({beforeBytes.Length}→{afterBytes.Length} B)");
+            bool noticeQuietAfter = host.Tray.Notice is null || !host.Tray.Notice.IsVisible;
+            Check("复制只保留卡片角标，不再弹出冗余通知窗",
+                badgeCommand && noticeQuietBefore && noticeQuietAfter,
+                $"角标命令={badgeCommand} 复制前静默={noticeQuietBefore} " +
+                $"复制后静默={noticeQuietAfter}");
+            host.ConfigureAudit(false, tempRoot);
+            host.ResetAudit();
+
+            // ①b 复制实现本身必须能把图片真的放进系统剪贴板（不只是发命令）。
+            // 冒烟为测试会话，会短暂占用剪贴板；剪贴板被别的进程独占时重试。
+            bool clipboardWritten = false;
+            for (int attempt = 0; attempt < 3 && !clipboardWritten; attempt++)
+            {
+                clipboardWritten = GdiPlus.CopyFileToClipboard(cardPath);
+                if (!clipboardWritten) Thread.Sleep(60);
+            }
+            bool hasBitmap = false, hasDrop = false;
+            string? dropPath = null;
+            if (clipboardWritten && ShellNative.OpenClipboard(IntPtr.Zero))
+            {
+                try
+                {
+                    hasBitmap = ShellNative.GetClipboardData(ShellNative.CF_BITMAP) != IntPtr.Zero;
+                    IntPtr hDrop = ShellNative.GetClipboardData(ShellNative.CF_HDROP);
+                    hasDrop = hDrop != IntPtr.Zero;
+                    if (hasDrop)
+                    {
+                        IntPtr p = ShellNative.GlobalLock(hDrop);
+                        if (p != IntPtr.Zero)
+                        {
+                            try
+                            {
+                                dropPath = System.Runtime.InteropServices.Marshal
+                                    .PtrToStringUni(p + 20); // DROPFILES 头占 20 字节
+                            }
+                            finally { ShellNative.GlobalUnlock(hDrop); }
+                        }
+                    }
+                }
+                finally { ShellNative.CloseClipboard(); }
+            }
+            Check("复制实现真写入系统剪贴板 (CF_BITMAP)", clipboardWritten && hasBitmap,
+                $"写入={clipboardWritten} 可读回位图={hasBitmap}");
+            bool dropOk = hasDrop && dropPath is not null &&
+                dropPath.EndsWith(Path.GetFileName(cardPath), StringComparison.OrdinalIgnoreCase);
+            Check("复制同时写入 CF_HDROP（资源管理器 Ctrl+V 可粘贴文件）",
+                clipboardWritten && dropOk,
+                $"可读回文件列表={hasDrop} 路径={dropPath ?? "null"}");
+
+            // ② 监听目录里的图片被删除 / 改名，绳子必须联动取下。
+            string watched = Path.Combine(tempRoot, "Watched");
+            Directory.CreateDirectory(watched);
+            string watchedFile = Path.Combine(watched, "watched.png");
+            GdiPlus.SaveBgraAsPng(ColorfulDemo(48, 32), 48, 32, watchedFile);
+            host.Facade.Handle(new NewItem(watchedFile, InOwnDirectory: false));
+            bool onLineBefore = host.Facade.Current.Items.Any(i => i.Path == watchedFile);
+            host.Facade.Handle(new FileDisappeared(watchedFile));
+            bool onLineAfter = host.Facade.Current.Items.Any(i => i.Path == watchedFile);
+            bool mapped = FolderWatcher.ToChange(2) == FolderChange.Removed
+                && FolderWatcher.ToChange(4) == FolderChange.RenamedOldName
+                && FolderWatcher.IsRemoval(FolderChange.Removed)
+                && FolderWatcher.IsRemoval(FolderChange.RenamedOldName);
+            Check("监听目录删除/改名 → 绳子联动取下",
+                onLineBefore && !onLineAfter && mapped,
+                $"删除前在绳上={onLineBefore} 删除后仍在={onLineAfter} 事件映射={mapped}");
+
+            // ③ 窗口类与 WM_SETCURSOR 都显式给出普通光标，不能沿用等待/启动光标。
+            IntPtr arrow = RopeWindow.ClassCursor;
+            IntPtr hand = RopeWindow.CursorFor(true);
+            IntPtr wait = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcWait);
+            IntPtr starting = ShellNative.LoadCursorW(IntPtr.Zero, ShellNative.IdcAppStarting);
+            bool cursorOk = arrow != IntPtr.Zero && hand != IntPtr.Zero
+                && arrow != wait && arrow != starting && hand != wait && hand != starting;
+            IntPtr classCursor = host.Rope.Exists
+                ? ShellNative.GetClassLongPtrW(host.Rope.Handle, ShellNative.GCLP_HCURSOR)
+                : IntPtr.Zero;
+            Check("绳窗口显式重置光标（无加载小圆圈）",
+                cursorOk && classCursor != IntPtr.Zero && classCursor != wait && classCursor != starting,
+                $"arrow=0x{arrow.ToInt64():X} hand=0x{hand.ToInt64():X} " +
+                $"classCursor=0x{classCursor.ToInt64():X}");
+
+            // ④ 自绘轻量通知（取代系统 NIF_INFO 气泡）：只服务欢迎 / 捕获开关 /
+            // 快捷键说明这类需要阅读的场景，复制场景已移除（见上面断言）。
+            // 尺寸缩 20%、可导出帧，用相对时间确定性推进淡入 → 停留 → 淡出 → 收起。
+            const string noticeTitle = "欢迎使用 ClipLine";
+            const string noticeText = "截个图，它就会挂在这里。右键托盘图标可打开设置菜单。";
+            host.Tray.ShowBalloon(noticeTitle, noticeText);
+            NoticeWindow? notice = host.Tray.Notice;
+            string noticePath = Path.Combine(tempRoot, "frame-notice.png");
+            bool noticeDumped = notice?.DumpFrame(noticePath) ?? false;
+            long noticeBytes = File.Exists(noticePath) ? new FileInfo(noticePath).Length : 0;
+            long n0 = Environment.TickCount64;
+            bool noticeShown = notice is not null && notice.Show(noticeTitle, noticeText, n0);
+            notice?.Tick(n0 + 200);
+            bool fadeIn = notice?.LastAlpha == 255;
+            notice?.Tick(n0 + 3350);
+            bool fadeOut = notice is not null && notice.LastAlpha < 255;
+            notice?.Tick(n0 + 3500);
+            bool noticeHidden = notice is not null && !notice.IsVisible;
+            int expectedW = (int)Math.Round(NoticeWindow.WidthDip * (notice?.Scale ?? 1));
+            int expectedH = (int)Math.Round(NoticeWindow.HeightDip * (notice?.Scale ?? 1));
+            bool sized = notice is not null && notice.WidthPx == expectedW
+                && notice.HeightPx == expectedH
+                && Math.Abs(NoticeWindow.SizeScale - 0.8) < 0.001;
+            Check("自绘通知窗替代系统气泡（288×76 DIP，缩 20%）",
+                noticeShown && noticeDumped && noticeBytes > 1000 && sized,
+                $"尺寸={notice?.WidthPx}×{notice?.HeightPx}px 缩放={notice?.Scale} 帧={noticeBytes} B");
+            Check("通知淡入 / 淡出 / 自动收起（确定性时序）",
+                fadeIn && fadeOut && noticeHidden,
+                $"淡入={fadeIn} 淡出={fadeOut} 收起={noticeHidden}");
+
+            // ⑤ 通知卡贴工作区右下角：UpdateLayeredWindow 的 pptDst 会重置窗口位置，
+            // 必须把 Position() 算出的坐标传进去，否则通知会跳到屏幕左上角。
+            long n1 = Environment.TickCount64;
+            notice?.Show(noticeTitle, noticeText, n1);
+            notice?.Tick(n1 + 200);
+            bool noticePlaced = false;
+            string noticeRect = "无窗口矩形";
+            if (notice is not null && ShellNative.GetWindowRect(notice.Handle, out ShellNative.RECT nr))
+            {
+                int sw = ShellNative.GetSystemMetrics(ShellNative.SM_CXSCREEN);
+                int sh = ShellNative.GetSystemMetrics(ShellNative.SM_CYSCREEN);
+                noticeRect = $"({nr.Left},{nr.Top})-({nr.Right},{nr.Bottom}) / 屏幕 {sw}×{sh}";
+                noticePlaced = nr.Right > sw / 2 && nr.Top > sh / 2 && nr.Right <= sw;
+            }
+            Check("自绘通知卡停在右下角（分层窗口目标点未把它拉回左上角）",
+                noticePlaced, noticeRect);
+            notice?.Hide();
+
+            // ⑥ v1.4：四个系统替身窗口各自独立，取代统一降级到系统默认应用。
+            string toolImage = Path.Combine(tempRoot, "tool-demo.png");
+            GdiPlus.SaveBgraAsPng(ColorfulDemo(64, 48), 64, 48, toolImage);
+            var toolPaths = new List<string> { toolImage };
+            ToolMode[] modes = { ToolMode.QuickLook, ToolMode.Markup, ToolMode.Trim, ToolMode.Held };
+            var shown = new bool[modes.Length];
+            var dumped = new bool[modes.Length];
+            for (int i = 0; i < modes.Length; i++)
+            {
+                shown[i] = host.Tools.Show(modes[i], toolPaths, 0, Guid.Empty);
+                string frame = Path.Combine(tempRoot, "frame-tool-" + modes[i] + ".png");
+                dumped[i] = host.Tools.DumpFrame(modes[i], frame)
+                    && File.Exists(frame) && new FileInfo(frame).Length > 1000;
+                host.Tools.Close(modes[i]);
+            }
+            bool allWindows = shown.All(v => v) && dumped.All(v => v);
+            bool distinctSizes = modes.Select(ToolWindow.SizeFor).Distinct().Count() == modes.Length;
+            Check("四个替身窗口各自独立且尺寸不同（快速查看/标注/修剪/拿在手上）",
+                allWindows && distinctSizes,
+                $"显示={string.Join(",", shown)} 帧={string.Join(",", dumped)} " +
+                $"尺寸={string.Join(" / ", modes.Select(m => ToolWindow.SizeFor(m).ToString()))}");
+            host.Tools.CloseAll();
+
+            // ⑦ V-09 绳结：固定后绳帧必须发生可见变化，并能导出局部放大证据。
+            string ropeBefore = Path.Combine(tempRoot, "rope-before-pin.png");
+            string ropeAfter = Path.Combine(tempRoot, "rope-after-pin.png");
+            host.Rope.DumpFrame(ropeBefore);
+            ItemSnapshot? pinTarget = host.Facade.Current.Items.FirstOrDefault(i => !i.Kept);
+            if (pinTarget is not null)
+                host.Facade.Handle(new ContextMenuItem(pinTarget.Id,
+                    ClipLine.Domain.ContextAction.Pin));
+            host.RenderFrame();
+            host.Rope.DumpFrame(ropeAfter);
+            bool ropeChanged = File.Exists(ropeBefore) && File.Exists(ropeAfter)
+                && !File.ReadAllBytes(ropeBefore).SequenceEqual(File.ReadAllBytes(ropeAfter));
+            string knotPath = Path.Combine(tempRoot, "frame-knot-zoom.png");
+            bool knotDumped = host.Rope.DumpFrame(knotPath, 560, 0, 240, 90)
+                && File.Exists(knotPath) && new FileInfo(knotPath).Length > 200;
+            Check("V-09 固定后绳帧出现绳结 / 靛蓝分区且局部证据可导出",
+                pinTarget is not null && ropeChanged && knotDumped,
+                $"固定项={pinTarget is not null} 帧变化={ropeChanged} 局部帧={knotDumped} " +
+                $"条目数={host.Facade.Current.Items.Count} " +
+                $"已固定={host.Facade.Current.Items.Count(i => i.Kept)}");
+
+            // ⑧ 像素级回归：染色段必须是靛蓝（B>R），不能因 B/G/R 色序反转成粉红；
+            // 且亚像素 Stroke 让带宽连续，不能像整数行染色那样出现整像素台阶。
+            // 这两类缺陷都曾被真实证据帧抓到，仅断言「帧内容不同」是拦不住的。
+            int blueSamples = 0, totalSamples = 0, maxBandJump = 0, maxBandMass = 0;
+            int prevMass = -1;
+            var pinnedRects = host.Rope.CardRects;
+            int tintFrom = (int)Math.Round(24 * host.Scale) + 10;
+            int tintTo = pinnedRects.Count >= 2
+                ? (pinnedRects[0].X + pinnedRects[0].W + pinnedRects[1].X) / 2 - 16
+                : tintFrom + 120;
+            double widthDip = env.ScreenWidthDip;
+            for (int x = tintFrom; x < tintTo; x++)
+            {
+                double y = Layout.RopeY(x / host.Scale, widthDip) * host.Scale;
+                int mass = 0, bestA = 0, bestR = 0, bestB = 0;
+                for (int yy = (int)Math.Floor(y) - 3; yy <= (int)Math.Ceiling(y) + 4; yy++)
+                {
+                    (int r, _, int b, int a) = host.Rope.PixelAt(x, yy);
+                    mass += a;
+                    if (a > bestA) { bestA = a; bestR = r; bestB = b; }
+                }
+                if (bestA < 8) continue;
+                totalSamples++;
+                if (bestB > bestR + 12) blueSamples++;
+                if (prevMass >= 0) maxBandJump = Math.Max(maxBandJump, Math.Abs(mass - prevMass));
+                prevMass = mass;
+                maxBandMass = Math.Max(maxBandMass, mass);
+            }
+            bool tintBlue = totalSamples > 40 && blueSamples >= totalSamples * 9 / 10;
+            bool bandSmooth = totalSamples > 40 && maxBandJump > 0
+                && maxBandJump <= Math.Max(60, maxBandMass / 4);
+            Check("固定绳段为靛蓝（非粉红）且亚像素连续（真实像素采样）",
+                tintBlue && bandSmooth,
+                $"采样={totalSamples} 蓝色占优={blueSamples} 最大相邻带宽跳变={maxBandJump} " +
+                $"最大带宽={maxBandMass} x=[{tintFrom},{tintTo})");
+        }
+        finally
+        {
+            host.Dispose();
+        }
     }
 
     /// <summary>左橙 / 右上蓝 / 右下白的可辨识 BGRA 测试图。</summary>
