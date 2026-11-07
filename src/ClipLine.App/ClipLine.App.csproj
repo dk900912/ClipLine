@@ -1,6 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!--
+      版本号只有一个来源：src/ClipLine.Domain/BuildInfo.cs。
+      这里用 MSBuild 属性函数把它读出来注入程序集元数据，避免文件属性里显示
+      1.0.0（SDK 默认）而 Release 是 1.1.0 —— 排障时两边对不上。
+      负向后顾 (?&lt;[A-Za-z]) 是为了不误匹配 MsixVersion。
+    -->
+    <ClipLineVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\ClipLine.Domain\BuildInfo.cs')), '(?&lt;![A-Za-z])Version\s*=\s*"([^"]+)"').Groups[1].Value)</ClipLineVersion>
+    <Version>$(ClipLineVersion)</Version>
+    <FileVersion>$(ClipLineVersion).0</FileVersion>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <RootNamespace>ClipLine.AppHost</RootNamespace>

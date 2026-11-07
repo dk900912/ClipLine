@@ -54,6 +54,10 @@ try {
             catch {
                 # Idempotent: re-running the e2e after the package is already at
                 # this version must not be reported as a failed update.
+                # NOTE: 1.0.1.0 is a deliberate LOWER BOUND, not the current
+                # release version - do not bump it on every release. Using
+                # ">= any version we ever shipped" keeps this branch idempotent
+                # for all later builds.
                 $current = Get-AppxPackage -Name ClipLine -ErrorAction SilentlyContinue |
                     Select-Object -First 1
                 if ($current -and ([version]$current.Version -ge [version]'1.0.1.0')) {

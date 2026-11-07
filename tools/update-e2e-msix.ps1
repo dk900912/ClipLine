@@ -55,6 +55,10 @@ try {
     Copy-Item $msix.FullName $newMsix -Force
     $hash = (Get-FileHash $newMsix -Algorithm SHA256).Hash
     [System.IO.File]::WriteAllText(($newMsix + '.sha256'), ($hash + '  ' + $newName + "`r`n"))
+    # Expected installed version comes from the asset we actually serve, so a
+    # release version bump never needs a hand-edited constant here.
+    $expectedVer = [regex]::Match($newName, 'ClipLine_([0-9.]+)_x64').Groups[1].Value
+    if (-not $expectedVer) { throw 'Cannot parse version from mock asset name.' }
     Write-Output "MOCK_ASSET=$newName SHA256=$hash SOURCE=$($msix.Name)"
 
     # ---- local Releases API ----
@@ -83,7 +87,7 @@ try {
         $pkg = Get-AppxPackage -Name ClipLine -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($pkg) {
             $pkgVersion = "$($pkg.Version)"
-            if ([version]$pkgVersion -ge [version]'1.0.1.0') { $registered = $true }
+            if ([version]$pkgVersion -ge [version]$expectedVer) { $registered = $true }
         }
         if ($helperDone -and $registered) { break }
         Start-Sleep -Seconds 2

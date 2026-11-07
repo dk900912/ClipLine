@@ -7,7 +7,7 @@ namespace ClipLine.Domain;
 /// </summary>
 public static class BuildInfo
 {
-    public const string Version = "1.0.1";
-    public const string MsixVersion = "1.0.1.0";
+    public const string Version = "1.1.0";
+    public const string MsixVersion = "1.1.0.0";
     public const string ReleaseRepo = "dk900912/ClipLine";
 }
