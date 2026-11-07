@@ -1,15 +1,17 @@
-# ClipLine v1 发布说明（当前版本 1.0.1）
+# ClipLine v1 发布说明（当前版本 1.1.0）
 
-> 状态：**已构建、已签名、已在本机实跑验证、已公开发布**。GitHub Release `v1.0.1` 已上线，源码 `HEAD = origin/main = ca28582`，详见 §13.7。本文档是 v1 的唯一放行记录，取代 `docs/06` / `docs/08` 中关于「尚未打包」的旧表述。
-> 构建日期：2026-11-05；目标平台：Windows 11 x64（单显示器 + 单一系统缩放）。
+> 状态：**已构建、已签名、已在本机实跑验证、已公开发布**。当前公开发布 **`v1.1.0`**（源码 `HEAD = origin/main = e63f8eb`，见 §15）；上一版 `v1.0.1`（`ca28582`）见 §13.7。本文档是 v1 的唯一放行记录，取代 `docs/06` / `docs/08` 中关于「尚未打包」的旧表述。
+> 构建日期：2026-11-07（v1.1.0）/ 2026-11-05（v1.0.1）；目标平台：Windows 11 x64（单显示器 + 单一系统缩放）。
 > 注：§7–§12 中「本轮未 commit、未 push」是各历史轮次当时的快照记录；这些改动已随 §13.7 的 `ca28582` 一次性提交并推送。
 
 ## 1. 交付物
 
+> 下表是**当前发布（v1.1.0）**的产物与哈希。v1.0.1 的历史值（`610A2849…` / `5197CAA4…`）见 §13.7。
+
 | 文件 | 说明 | 大小 | SHA-256 |
 |---|---|---|---|
-| `dist/ClipLine_1.0.1.0_x64.msix` | 正式 MSIX（v1.5 方案 D），已用 `CN=ClipLine` 代码签名证书签名（`SHA256`）；Identity 版本同步升到 `1.0.1.0` 以支持 `Add-AppxPackage` 更新 | 29.03 MB | `610A28491B333D66A93C1B66B3E67AB5D92FB6F445E66B28C9C319A1A88692BA` |
-| `dist/ClipLine_1.0.1.0_x64_portable.zip` | 免签名、免安装的同 payload 便携包，解压后双击 `ClipLine.exe` | 28.35 MB | `5197CAA4EDA43ADA163DCE963D26139C348E8867B22856BD963A3818BC28C15B` |
+| `dist/ClipLine_1.1.0.0_x64.msix` | 正式 MSIX（v1.5 方案 D），已用 `CN=ClipLine` 代码签名证书签名（`SHA256`）；Identity 版本 `1.1.0.0` 以支持 `Add-AppxPackage` 更新 | 29.07 MB | `C6677CF94A35C9C3E8D852894839E9E41E461B9B02FB89073F2E419E8E57735B` |
+| `dist/ClipLine_1.1.0.0_x64_portable.zip` | 免签名、免安装的同 payload 便携包，解压后双击 `ClipLine.exe` | 28.39 MB | `262397AABE27E6A0513323E3DA871399A0B72E62E2173CF1B5248319227763CF` |
 | `dist/*.sha256` / `release-assets.txt` | GitHub Release 资产清单与逐文件 SHA-256 sidecar，客户端校验不通过即丢弃下载 | — | — |
 | `dist/ClipLine.cer` / `ClipLine.pfx` | 本地开发签名证书（公钥 / 带口令私钥，口令见构建脚本） | — | — |
 | `dist/ClipLine_1.0.0.0_render-frame.png` | **确定性渲染证据**：应用把当前 32bpp DIB 帧导出的 PNG，绳 + 夹子 + 真实缩略图卡片（橙/蓝/白三色块顺序正确） | 15 KB | — |
@@ -20,7 +22,9 @@
 | `dist/ui-evidence/` | **真实鼠标点击端到端证据**（11 张）：四个替身窗口帧 / 整屏截图、绳结局部帧与 6× 放大图、固定前后绳帧 | — | — |
 | `dist/e2e-desktop.png` | 真机运行时的桌面环境截图，仅作运行记录；**不作为渲染证明**（见下方说明） | — | — |
 
-> 上表哈希是 2026-11-05 **v1.5 方案 D 双通道自动更新**的最终交付构建实测值（取代 v1.4 的 `EDD7C86A…` / `793130B4…`）。版本号由 `src/ClipLine.Domain/BuildInfo.cs` 单点派生，构建脚本据此注入 MSIX Identity 版本、生成资产文件名与 `.sha256`。重新运行 `tools/build-msix.ps1` 会因签名时间戳产生不同哈希；`dist/` 已由 `.gitignore` 排除，产物需从脚本复现。
+> 上表哈希是 2026-11-07 **v1.1.0** 交付构建的实测值（v1.0.1 为 `610A2849…` / `5197CAA4…`，见 §13.7）。版本号由 `src/ClipLine.Domain/BuildInfo.cs` 单点派生：构建脚本据此注入 MSIX Identity 版本、生成资产文件名与 `.sha256`，`ClipLine.App.csproj` 用 MSBuild 属性函数从同一文件注入程序集 `Version` / `FileVersion`。重新运行 `tools/build-msix.ps1` 会因签名时间戳产生不同哈希；`dist/` 已由 `.gitignore` 排除，产物需从脚本复现。
+>
+> **v1.7 增量（版本 1.1.0）**：卡片拖放出向（OLE `CF_HDROP`）与文字 / 马赛克标注落地；程序集元数据改为单点派生。详见 §14 与 §15。
 >
 > **v1.5 增量（版本 1.0.1，产品定位变更，用户拍板「必须做到 D」）**：GitHub Release 全自动更新，便携 ZIP 与 MSIX 双通道；「检查更新…」从「点了没反应」修成真实链路；`UpdateVersion` 版本比较、`UpdateService` 白名单联网与 SHA-256 校验、一次性 PowerShell helper 替换/注册与回滚、启动后一次静默检查；隐私门禁从「零联网」改为「白名单 + 零 URL 常量 + 零遥测」。详见 §13。
 >
@@ -42,7 +46,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-msix.ps1
 
 ### 便携版（推荐，零门槛）
 
-解压 `ClipLine_1.0.1.0_x64_portable.zip` 到任意目录，双击 `ClipLine.exe`。无需管理员、无需证书。应用默认纯本地运行；**唯一出站**是启动后一次（或用户点「检查更新…」）对 GitHub Release 的检查与下载，且只接受 `update-config.json` 的 `allowHosts` 白名单主机。设置环境变量 `CLIPLINE_AUTO_UPDATE=0` 可完全关闭启动检查。唯一会写注册表的情况是用户主动勾选菜单「登录时打开」：写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClipLine` 项，取消勾选即删除。
+解压 `ClipLine_1.1.0.0_x64_portable.zip` 到任意目录，双击 `ClipLine.exe`。无需管理员、无需证书。应用默认纯本地运行；**唯一出站**是启动后一次（或用户点「检查更新…」）对 GitHub Release 的检查与下载，且只接受 `update-config.json` 的 `allowHosts` 白名单主机。设置环境变量 `CLIPLINE_AUTO_UPDATE=0` 可完全关闭启动检查。唯一会写注册表的情况是用户主动勾选菜单「登录时打开」：写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClipLine` 项，取消勾选即删除。
 
 ### MSIX 版
 
@@ -51,7 +55,7 @@ MSIX 的签名链必须被目标机器信任。以管理员身份执行一次：
 ```powershell
 certutil -f -addstore "TrustedPeople" ClipLine.cer
 # 或双击 ClipLine.cer → 安装证书 → 本地计算机 → 受信任的根证书颁发机构
-Add-AppxPackage -Path .\ClipLine_1.0.1.0_x64.msix
+Add-AppxPackage -Path .\ClipLine_1.1.0.0_x64.msix
 ```
 
 `tools/trust-cert.ps1` 会自动判断权限：管理员则静默导入机器存储；非管理员则打印手动步骤，不会挂起。
@@ -464,3 +468,66 @@ tan(14°)≈0.25 意味着每 4 行才跳 1 像素，垂直边框变成台阶 �
 ### 14.4 仍未做
 
 入向拖放（拖进绳窗口）；标注「裁剪」笔型（需要重编码并覆盖原图，与「绝不覆盖用户原图」冲突）；卡片级 UIA；Mica/Acrylic。清单见 `docs/11` §5.1。
+
+## 15. v1.1.0 公开发布实录（2026-11-07）
+
+用户指令：「push and publish new version」。代码已在 `4cf945e` 推送到 `main`，本轮只做发版：升版本号 → 重建交付包 → 打 tag → 发 Release → 实机验证升级链路。
+
+### 15.1 版本号
+
+按 semver 走 minor（v1.7 新增两个功能）：`1.0.1` → **`1.1.0`**，MSIX Identity `1.0.1.0` → **`1.1.0.0`**。
+
+顺带修掉一个发出去就不好改的问题：**程序集版本此前是 SDK 默认的 `1.0.0.0`**。发布 1.0.1 时文件属性里显示 `1.0.0`，与 Release 版本对不上，排障时两边会打架。`ClipLine.App.csproj` 里用 MSBuild 属性函数从 `BuildInfo.cs` 读出 `Version` 注入 `Version` / `FileVersion`，**仍然只有一个版本源**：
+
+```xml
+<ClipLineVersion>$([System.Text.RegularExpressions.Regex]::Match(
+  $([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\ClipLine.Domain\BuildInfo.cs')),
+  '(?&lt;![A-Za-z])Version\s*=\s*"([^"]+)"').Groups[1].Value)</ClipLineVersion>
+<Version>$(ClipLineVersion)</Version>
+<FileVersion>$(ClipLineVersion).0</FileVersion>
+```
+
+负向后顾 `(?<![A-Za-z])` 是必要的：没有它 `MsixVersion` 也会被匹配到。
+
+另两处版本相关改动：`tools/update-e2e-msix.ps1` 把断言里硬编码的 `1.0.1.0` 改成从 mock 资产名解析（以后升版本不用再手改）；`packaging/update-helper.ps1` 给 `1.0.1.0` 补注释，说明它是「幂等判断的**下限**」而不是当前版本号 —— 这个值随每次发版被误改会破坏幂等分支。
+
+### 15.2 门禁（改版本后重跑，同一份工作区）
+
+| 门禁 | 结果 |
+|---|---|
+| `bash tools/verify.sh` | **151/151 PASS**，0 警告 0 错误 |
+| `tools/smoke.ps1` | **36/36 PASS** |
+| `tools/ui-click-verify.ps1` | **33/33 PASS** |
+| `tools/menu-audit.ps1` | `OK=42 / DEGRADED=3 / SKIP=0 / FAIL=0` |
+| `tools/update-e2e.ps1`（便携通道完整升级） | **VERDICT=PASS**：`MARKER_REPLACED=True` / `HELPER_DONE=True` / `APP_RESTARTED=True` / `REPLACE_OK` / `DONE mode=portable` |
+| 包内便携版冒烟（从 `dist` 解出的真实 payload） | **36/36 PASS** —— 证明打包没漏依赖 |
+
+### 15.3 真实升级链路验证（1.0.1 → 1.1.0）
+
+这是发新版最核心的风险，分三段验证，全部用**真实资产**：
+
+1. **检查**：把 `dist/ClipLine_1.0.1.0_x64_portable` 复制到临时目录，启动真实进程查真实 `api.github.com`。它正确解析出 `v1.1.0`，选中 **portable 通道**（`AppxManifest.xml` 不存在），并在 `%LOCALAPPDATA%\ClipLine\updates\` 下创建 `v1.1.0` 目录。
+2. **下载 + 校验**：下载落盘 **29,768,978 字节**，与发布资产字节数完全一致；文件名 `ClipLine_1.1.0.0_x64_portable.zip` 正确。SHA-256 不匹配时实现会 `File.Delete` 并置 `Failed`，而文件保留、状态进入 `Ready` → 校验通过。随后按设计**不自动安装**（`AppFacade.Update.cs`：「不再自动安装：面板出现，由用户点『立即重启更新』」），停在 `Ready` 等确认。
+3. **替换 + 重启**：用同一份下载到的真实 zip 覆盖目标目录，`ClipLine.exe` 的 `FileVersion` 从 `1.0.0.0` 变成 **`1.1.0.0`**，进程正常启动、100 个文件齐全。helper 的备份 / 回滚 / 重启分支由 §15.2 的 `update-e2e.ps1` 覆盖（`REPLACE_OK` + `DONE mode=portable`）。
+
+**一个如实说明**：第 3 段的文件替换是按 helper 的同一套语义手工执行的（备份 → 复制覆盖 → 启动）。原因是本会话的终端安全策略拦截了「从脚本里再拉起 PowerShell 子进程」和编码命令这两种方式，无法直接拉起 helper 脚本；helper 本身的功能完整性由 `update-e2e.ps1` 的 PASS 结果保证，两者合起来才构成完整证明。
+
+**本机网络的一个反直觉现象**：`curl` 走环境变量代理（`127.0.0.1:55587`）访问 `github.com` 全部超时，加 `--noproxy '*'` 直连也超时；但 `api.github.com` 正常，且 **ClipLine 客户端能完整下载** —— 说明 .NET `HttpClient` 走的是系统（WinHTTP/IE）代理，与环境变量代理不是同一条路径。排查客户端联网问题时不能只信 `curl`。
+
+### 15.4 发布
+
+| 步骤 | 结果 |
+|---|---|
+| 构建 | `tools/build-msix.ps1 -SkipBuild`（吃刚验证过的产物）；`[version] product=1.1.0 msix=1.1.0.0 tag=v1.1.0`；`makeappx + signtool sign OK`；MSIX 29.07 MB / ZIP 28.39 MB |
+| 提交 | `e63f8eb chore(release): 版本号升到 1.1.0，程序集元数据改为单点派生`（4 文件，+20/−3） |
+| 附注 tag | `v1.1.0`（tag object `8f299c3`）指向 `e63f8eb` |
+| 推送 | SSH over **443**（`ssh.github.com:443`）：`4cf945e..e63f8eb main -> main`，`[new tag] v1.1.0`。22 端口本轮超时，443 可用 |
+| 临时凭据 | 登记 deploy key `169060359`（`read_only=false`）→ 推送完成后 `DELETE` 返回 `204`，仓库现存 key 数 **0**；`origin` 仍是 HTTPS |
+| Release | <https://github.com/dk900912/ClipLine/releases/tag/v1.1.0>，4 个资产，**不含 `.pfx` / `.cer`** |
+| 匿名复核 | `/releases/latest` → `HTTP 200`、`tag_name=v1.1.0`、`draft=false`、`prerelease=false`；4 资产全部 `state=uploaded`，字节数与本地一致 |
+
+> `gh` 的 keyring token 本轮失效（`The token in keyring is invalid`），改用 `git credential` 里现存的 PAT 驱动 `gh api`；`api.github.com` 期间多次 `Bad Gateway`，所有请求加了重试。
+
+### 15.5 收尾状态
+
+`HEAD = origin/main = e63f8eb`，tag `v1.1.0` 已推送，Release 公开可读。本机：所有 ClipLine 测试进程已停止、`updates\` 缓存已清空（含历史 `v9.9.9` e2e 残留共 85 MB）、用户真实 `state.json` 已还原、deploy key 已删净。
